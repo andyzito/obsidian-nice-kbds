@@ -1,81 +1,144 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import {
+	App,
+	Plugin,
+	PluginSettingTab,
+	Setting,
+	editorEditorField,
+	editorLivePreviewField
+} from 'obsidian';
+import {
+	EditorView,
+	Decoration,
+	DecorationSet,
+} from "@codemirror/view";
+import { syntaxTree } from "@codemirror/language";
+import { Range, StateField, Transaction, Extension } from '@codemirror/state';
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface NiceKBDsSettings {
+	characters: string;
+	words: string;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+const DEFAULT_SETTINGS: NiceKBDsSettings = {
+	//https://wincent.com/wiki/Unicode_representations_of_modifier_keys
+	characters: '⌘⇧⇪⇥⎋⌃⌥␣⏎⌫⌦⇱⇲⇞⇟',
+	words: 'ctrl',
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+class NiceKBDsSettingsTab extends PluginSettingTab {
+	plugin: NiceKBDsPlugin;
+
+	constructor(app: App, plugin: NiceKBDsPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+	}
+
+	display(): void {
+		const {containerEl} = this;
+
+		containerEl.empty();
+
+		new Setting(containerEl)
+			.setName('Characters')
+			.setDesc('Characters that will trigger a <kbd> tag.')
+			.addText(text => text
+				.setPlaceholder(DEFAULT_SETTINGS.characters)
+				.setValue(this.plugin.settings.characters)
+				.onChange(async (value) => {
+					this.plugin.settings.characters = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Words')
+			.setDesc('Words that will trigger a <kbd> tag. Case insensitive, comma separated.')
+			.addText(text => text
+				.setPlaceholder(DEFAULT_SETTINGS.words)
+				.setValue(this.plugin.settings.words)
+				.onChange(async (value) => {
+					this.plugin.settings.words = value;
+					await this.plugin.saveSettings();
+				}));
+	}
+}
+
+export const createNiceKBDsEditorExtension = (settings: NiceKBDsSettings) => StateField.define<DecorationSet>({
+	create() {
+		return Decoration.none;
+	},
+
+	update(prev: DecorationSet, tr: Transaction): DecorationSet {
+		const { state } = tr;
+		const view = state.field(editorEditorField);
+
+		if (view.composing) return prev.map(tr.changes); // User is using IME
+
+		const isSourceMode = !state.field(editorLivePreviewField);
+		if (isSourceMode) return Decoration.none;
+
+		const decorations: Range<Decoration>[] = [];
+
+		for (let { from, to } of view.visibleRanges) {
+			syntaxTree(state).iterate({
+				from,
+				to,
+				enter(node) {
+					const text = state.doc.sliceString(node.from, node.to);
+
+					const indicesForKBDs = new Array<[number, number]>();
+
+					const characters = settings.characters;
+					const words = settings.words.split(',').join('|');
+					const initialKeyRegex = new RegExp(`([${characters}]+\\w*)|${words}`)
+					const subsequentKeyRegex = new RegExp(`(${initialKeyRegex.source}|\\w)+`)
+					const addKeysRegex = new RegExp(`(?<sep>\\s*\\+\\s*)(?<key>${subsequentKeyRegex.source})`, 'gi')
+					const wholeRegex = new RegExp(`(?<initialKey>${initialKeyRegex.source})(${addKeysRegex.source})*`, 'gi')
+
+					// TODO: Don't double up when two initial keys follow each other
+
+					let wholeMatch;
+					while ((wholeMatch = wholeRegex.exec(text))) {
+						indicesForKBDs.push([
+							wholeMatch.index,
+							wholeMatch.index + (wholeMatch.groups?.initialKey?.length ?? 0)
+						]);
+
+						let addKeysMatch;
+						while ((addKeysMatch = addKeysRegex.exec(wholeMatch[0]))) {
+							indicesForKBDs.push([
+								wholeMatch.index + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
+								wholeMatch.index + addKeysMatch.index + addKeysMatch[0].length
+							]);
+						}
+					}
+
+					for (const [start, end] of indicesForKBDs) {
+						decorations.push(Decoration.mark({
+							inclusive: true,
+							class: "nice-kbd",
+							tagName: "kbd",
+						}).range(from + start, from + end))
+					}
+				}
+			})
+		}
+
+		return Decoration.set(decorations, true);
+	},
+
+	provide(field: StateField<DecorationSet>): Extension {
+		return EditorView.decorations.from(field);
+	}
+})
+
+export default class NiceKBDsPlugin extends Plugin {
+	settings: NiceKBDsSettings;
 
 	async onload() {
 		await this.loadSettings();
+		this.addSettingTab(new NiceKBDsSettingsTab(this.app, this));
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		this.registerEditorExtension(createNiceKBDsEditorExtension(this.settings));
 	}
 
 	onunload() {
@@ -88,47 +151,5 @@ export default class MyPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const {containerEl} = this;
-
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
 	}
 }
