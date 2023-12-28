@@ -3,7 +3,6 @@ import {
 	Plugin,
 	PluginSettingTab,
 	Setting,
-	editorEditorField,
 	editorLivePreviewField
 } from 'obsidian';
 import {
@@ -16,7 +15,6 @@ import {
 } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 import { Range, StateField, Transaction, Extension } from '@codemirror/state';
-import { get } from 'http';
 
 interface NiceKBDsSettings {
 	characters: string;
@@ -81,8 +79,6 @@ const getNiceKBDsViewPlugin = (settings: NiceKBDsSettings) => ViewPlugin.fromCla
 		this.kbdDecorator = new MatchDecorator({
 			regexp: wholeRegex,
 			decorate(add, from, to, match, view) {
-				console.log(from, to)
-				console.log(`Found match: ${match[0]} at ${match.index} to ${match.index + match[0].length}`)
 				add(
 					from,
 					from + (match.groups?.initialKey?.length ?? 0),
@@ -119,6 +115,116 @@ const getNiceKBDsViewPlugin = (settings: NiceKBDsSettings) => ViewPlugin.fromCla
   decorations: instance => instance.decorations,
 })
 
+const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<DecorationSet>({
+	create() {
+		return Decoration.none;
+	},
+
+	update(prev: DecorationSet, transaction: Transaction): DecorationSet {
+		const characters = settings.characters;
+		const words = settings.words.split(',').join('|');
+		const initialKeyRegex = new RegExp(`([${characters}]+\\w*)|${words}`)
+		const subsequentKeyRegex = new RegExp(`(${initialKeyRegex.source}|\\w)+`)
+		const addKeysRegex = new RegExp(`(?<sep> *\\+ *)(?<key>${subsequentKeyRegex.source})`, 'gi')
+		const wholeRegex = new RegExp(`(?<initialKey>${initialKeyRegex.source})(${addKeysRegex.source})*`, 'gi')
+
+		const isSourceMode = !transaction.state.field(editorLivePreviewField);
+		if (isSourceMode) return Decoration.none;
+
+		const includeIndices = new Set<string>();
+		const excludeIndices = new Set<string>();
+
+		const decorations: Range<Decoration>[] = [];
+
+		syntaxTree(transaction.state).iterate({
+			enter(node){
+				if (node.name.match(/formatting|HyperMD/)) return;
+
+				let indices = includeIndices
+				if (node.name.match(/hashtag|code/)) {
+					indices = excludeIndices;
+				}
+
+				const text = transaction.state.doc.sliceString(node.from, node.to);
+
+				let wholeMatch;
+				while ((wholeMatch = wholeRegex.exec(text))) {
+					indices.add([
+						node.from + wholeMatch.index,
+						node.from + wholeMatch.index + (wholeMatch.groups?.initialKey?.length ?? 0)
+					].join(','));
+
+					let addKeysMatch;
+					while ((addKeysMatch = addKeysRegex.exec(wholeMatch[0]))) {
+						indices.add([
+							node.from + wholeMatch.index + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
+							node.from + wholeMatch.index + addKeysMatch.index + addKeysMatch[0].length
+						].join(','));
+					}
+				}
+			}
+		})
+
+		for (const indices of includeIndices) {
+			if (excludeIndices.has(indices)) continue;
+			const [start, end] = indices.split(',').map(Number);
+			decorations.push(Decoration.mark({
+				inclusive: true,
+				class: "nice-kbd",
+				tagName: "kbd",
+			}).range(start, end))
+		}
+
+		return Decoration.set(decorations, true);
+	},
+
+	provide(field: StateField<DecorationSet>): Extension {
+		return EditorView.decorations.from(field);
+	}
+})
+
+const getNiceKBDPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLElement, context: any) => {
+	const replaceInnerHTMLForKBD = (el: HTMLElement) => {
+		const characters = settings.characters;
+		const words = settings.words.split(',').join('|');
+		const initialKeyRegex = new RegExp(`([${characters}]+\\w*)|${words}`)
+		const subsequentKeyRegex = new RegExp(`(${initialKeyRegex.source}|\\w)+`)
+		const addKeysRegex = new RegExp(`(?<sep> *\\+ *)(?<key>${subsequentKeyRegex.source})`, 'gi')
+		const wholeRegex = new RegExp(`(?<initialKey>${initialKeyRegex.source})(${addKeysRegex.source})*`, 'gi')
+
+		const innerHTML = el.innerHTML;
+		let newInnerHTML = '';
+		let wholeMatch;
+		let lastIndex = 0;
+		while (wholeMatch = wholeRegex.exec(innerHTML)) {
+			newInnerHTML += innerHTML.slice(lastIndex, wholeMatch.index);
+			newInnerHTML += `<kbd class="nice-kbd">${wholeMatch.groups?.initialKey}</kbd>`;
+
+			let addKeysMatch;
+			while (addKeysMatch = addKeysRegex.exec(wholeMatch[0])) {
+				newInnerHTML += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${addKeysMatch.groups?.key}</kbd>`;
+			}
+
+			lastIndex = wholeMatch.index + wholeMatch[0].length;
+		}
+		newInnerHTML += innerHTML.slice(lastIndex);
+		el.innerHTML = newInnerHTML;
+	}
+
+	for (const el of element.findAll('p,li,div,h1,h2,h3,h4,h5,h6,h7')) {
+		if (el.innerText) {
+			if (el.nodeName === 'DIV') {
+				if (el.classList.contains('callout-title-inner')) {
+					replaceInnerHTMLForKBD(el);
+				}
+			} else {
+				if (el.findAll('.tag,code').length > 0) continue;
+				replaceInnerHTMLForKBD(el);
+			}
+		}
+	}
+}
+
 export default class NiceKBDsPlugin extends Plugin {
 	settings: NiceKBDsSettings;
 
@@ -126,7 +232,10 @@ export default class NiceKBDsPlugin extends Plugin {
 		await this.loadSettings();
 		this.addSettingTab(new NiceKBDsSettingsTab(this.app, this));
 
-		this.registerEditorExtension(getNiceKBDsViewPlugin(this.settings))
+		// this.registerEditorExtension(getNiceKBDsViewPlugin(this.settings))
+		this.registerEditorExtension(getNiceKBDsStateField(this.settings))
+
+		this.registerMarkdownPostProcessor(getNiceKBDPostProcessor(this.settings));
 	}
 
 	onunload() {
