@@ -18,12 +18,14 @@ import { Range, StateField, Transaction, Extension } from '@codemirror/state';
 
 interface NiceKBDsSettings {
 	characters: string;
+	additionalCharacters: string;
 	words: string;
 }
 
 const DEFAULT_SETTINGS: NiceKBDsSettings = {
 	//https://wincent.com/wiki/Unicode_representations_of_modifier_keys
-	characters: '⌘⇧⇪⇥⎋⌃⌥␣⏎⌫⌦⇱⇲⇞⇟',
+	characters: '⌘⇧⇪⇥⎋⌃⌥⎇␣⏎⌫⌦⇱⇲⇞⇟⌧⇭⌤⏏⌽',
+	additionalCharacters: '↑⇡↓⇣←⇠→⇢',
 	words: 'ctrl',
 }
 
@@ -48,6 +50,17 @@ class NiceKBDsSettingsTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.characters)
 				.onChange(async (value) => {
 					this.plugin.settings.characters = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Additional Characters')
+			.setDesc('Characters that will work in an additional key but not trigger a key sequence.')
+			.addText(text => text
+				.setPlaceholder(DEFAULT_SETTINGS.additionalCharacters)
+				.setValue(this.plugin.settings.additionalCharacters)
+				.onChange(async (value) => {
+					this.plugin.settings.additionalCharacters = value;
 					await this.plugin.saveSettings();
 				}));
 
@@ -122,9 +135,10 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 
 	update(prev: DecorationSet, transaction: Transaction): DecorationSet {
 		const characters = settings.characters;
+		const additionalCharacters = settings.additionalCharacters;
 		const words = settings.words.split(',').join('|');
 		const initialKeyRegex = new RegExp(`([${characters}]+\\w*)|${words}`)
-		const subsequentKeyRegex = new RegExp(`(${initialKeyRegex.source}|\\w)+`)
+		const subsequentKeyRegex = new RegExp(`(${initialKeyRegex.source}|\\w|[${additionalCharacters}])+`)
 		const addKeysRegex = new RegExp(`(?<sep> *\\+ *)(?<key>${subsequentKeyRegex.source})`, 'gi')
 		const wholeRegex = new RegExp(`(?<initialKey>${initialKeyRegex.source})(${addKeysRegex.source})*`, 'gi')
 
