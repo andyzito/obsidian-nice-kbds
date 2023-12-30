@@ -12,21 +12,25 @@ import {
 	MatchDecorator,
 	ViewPlugin,
 	ViewUpdate,
+	WidgetType,
 } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 import { Range, StateField, Transaction, Extension } from '@codemirror/state';
+import { match } from 'assert';
 
 interface NiceKBDsSettings {
 	characters: string;
 	additionalCharacters: string;
 	words: string;
+	kbdWrapperForce: string;
 }
 
 const DEFAULT_SETTINGS: NiceKBDsSettings = {
 	//https://wincent.com/wiki/Unicode_representations_of_modifier_keys
 	characters: '⌘⇧⇪⇥⎋⌃⌥⎇␣⏎⌫⌦⇱⇲⇞⇟⌧⇭⌤⏏⌽',
-	additionalCharacters: '↑⇡↓⇣←⇠→⇢',
+	additionalCharacters: '↑⇡↓⇣←⇠→⇢|\\{}[]~!@#$%^&*()_+`-=;:\'"<>,./?',
 	words: 'ctrl',
+	kbdWrapperForce: '«,»',
 }
 
 class NiceKBDsSettingsTab extends PluginSettingTab {
@@ -74,6 +78,25 @@ class NiceKBDsSettingsTab extends PluginSettingTab {
 					this.plugin.settings.words = value;
 					await this.plugin.saveSettings();
 				}));
+
+		new Setting(containerEl)
+			.setName('Force KBD Wrapper')
+			.setDesc('Use like any other Markdown syntax to denote a KBD. Separate open and close with a comma.')
+			.addText(text => text
+				.setPlaceholder(DEFAULT_SETTINGS.kbdWrapperForce)
+				.setValue(this.plugin.settings.kbdWrapperForce)
+				.onChange(async (value) => {
+					this.plugin.settings.kbdWrapperForce = value;
+					await this.plugin.saveSettings();
+				}));
+	}
+}
+
+class HideWidget extends WidgetType {
+	toDOM() {
+		const element = document.createElement("span");
+		element.style.display = "none";
+		return element;
 	}
 }
 
@@ -134,13 +157,7 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 	},
 
 	update(prev: DecorationSet, transaction: Transaction): DecorationSet {
-		const characters = settings.characters;
-		const additionalCharacters = settings.additionalCharacters;
-		const words = settings.words.split(',').join('|');
-		const initialKeyRegex = new RegExp(`([${characters}]+\\w*)|${words}`)
-		const subsequentKeyRegex = new RegExp(`(${initialKeyRegex.source}|\\w|[${additionalCharacters}])+`)
-		const addKeysRegex = new RegExp(`(?<sep> *\\+ *)(?<key>${subsequentKeyRegex.source})`, 'gi')
-		const wholeRegex = new RegExp(`(?<initialKey>${initialKeyRegex.source})(${addKeysRegex.source})*`, 'gi')
+		const R = getNiceKBDsRegexes(settings);
 
 		const isSourceMode = !transaction.state.field(editorLivePreviewField);
 		if (isSourceMode) return Decoration.none;
@@ -162,17 +179,39 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 				const text = transaction.state.doc.sliceString(node.from, node.to);
 
 				let wholeMatch;
-				while ((wholeMatch = wholeRegex.exec(text))) {
+				while ((wholeMatch = R.wholeRegex.exec(text))) {
+					// Check if wholeMatch is overlapping selection ranges
+					const docFrom = node.from + wholeMatch.index;
+					const docTo = node.from + wholeMatch.index + wholeMatch[0].length;
+					let mode = 'read'
+					const selectionRanges = transaction.state.selection.ranges;
+					for (const range of selectionRanges) {
+						if ((docFrom <= range.to && docTo >= range.from) || (docFrom >= range.from && docTo <= range.to)) {
+							mode = 'edit';
+							break;
+						}
+					}
+
 					indices.add([
 						node.from + wholeMatch.index,
 						node.from + wholeMatch.index + (wholeMatch.groups?.initialKey?.length ?? 0)
 					].join(','));
 
+					if (wholeMatch.groups?.initialKey?.match(R.wrapperRegex) && mode === 'read') {
+						decorations.push(Decoration.replace({
+							widget: new HideWidget(),
+						}).range(node.from + wholeMatch.index, node.from + wholeMatch.index + 1))
+						decorations.push(Decoration.replace({
+							widget: new HideWidget(),
+						}).range(node.from + wholeMatch.index + wholeMatch.groups?.initialKey?.length - 1, node.from + wholeMatch.index + wholeMatch.groups?.initialKey?.length))
+					}
+
 					let addKeysMatch;
-					while ((addKeysMatch = addKeysRegex.exec(wholeMatch[0]))) {
+					console.log(wholeMatch[0].slice(wholeMatch.groups?.initialKey.length))
+					while ((addKeysMatch = R.addKeysRegex.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey.length)))) {
 						indices.add([
-							node.from + wholeMatch.index + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
-							node.from + wholeMatch.index + addKeysMatch.index + addKeysMatch[0].length
+							node.from + wholeMatch.index + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
+							node.from + wholeMatch.index + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + addKeysMatch[0].length
 						].join(','));
 					}
 				}
@@ -197,25 +236,33 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 	}
 })
 
-const getNiceKBDPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLElement, context: any) => {
+const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLElement, context: any) => {
 	const replaceInnerHTMLForKBD = (el: HTMLElement) => {
-		const characters = settings.characters;
-		const words = settings.words.split(',').join('|');
-		const initialKeyRegex = new RegExp(`([${characters}]+\\w*)|${words}`)
-		const subsequentKeyRegex = new RegExp(`(${initialKeyRegex.source}|\\w)+`)
-		const addKeysRegex = new RegExp(`(?<sep> *\\+ *)(?<key>${subsequentKeyRegex.source})`, 'gi')
-		const wholeRegex = new RegExp(`(?<initialKey>${initialKeyRegex.source})(${addKeysRegex.source})*`, 'gi')
+		const R = getNiceKBDsRegexes(settings);
+
+		// const fuzzyGetMatchGroup = (match: RegExpExecArray, groupName: string) => {
+		// 	// Return the first group that matches /[a-z]${groupName}/i
+		// 	const fuzzyRegex = new RegExp(`[a-z]?${groupName}`, 'i');
+		// 	for (const [key, value] of Object.entries(match.groups ?? {})) {
+		// 		if (fuzzyRegex.test(key) && value !== undefined) return value;
+		// 	}
+		// }
 
 		const innerHTML = el.innerHTML;
 		let newInnerHTML = '';
+
 		let wholeMatch;
 		let lastIndex = 0;
-		while (wholeMatch = wholeRegex.exec(innerHTML)) {
+		while (wholeMatch = R.wholeRegex.exec(innerHTML)) {
 			newInnerHTML += innerHTML.slice(lastIndex, wholeMatch.index);
-			newInnerHTML += `<kbd class="nice-kbd">${wholeMatch.groups?.initialKey}</kbd>`;
+
+			const rawInitialKey = wholeMatch.groups?.initialKey;
+			const initialKey = rawInitialKey?.replace(/^«|»$/g, '').trim();
+			newInnerHTML += `<kbd class="nice-kbd">${initialKey}</kbd>`;
 
 			let addKeysMatch;
-			while (addKeysMatch = addKeysRegex.exec(wholeMatch[0])) {
+			while (addKeysMatch = R.addKeysRegex.exec(wholeMatch[0].slice(rawInitialKey?.length))) {
+				console.log(addKeysMatch)
 				newInnerHTML += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${addKeysMatch.groups?.key}</kbd>`;
 			}
 
@@ -239,6 +286,33 @@ const getNiceKBDPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLEl
 	}
 }
 
+const getNiceKBDsRegexes = (settings: NiceKBDsSettings) => {
+	const characters = settings.characters;
+	const additionalCharacters = settings.additionalCharacters;
+	const words = settings.words.split(',').join('|');
+	const openWrapper = settings.kbdWrapperForce.split(',')[0];
+	const closeWrapper = settings.kbdWrapperForce.split(',')[1];
+
+	const initialKeyRegex = new RegExp(`([${characters}]+[${additionalCharacters}\\w]*)|${words}`)
+	const wrapperRegex = new RegExp(`${openWrapper}.*?${closeWrapper}`)
+	const subsequentKeyRegex = new RegExp(`([${characters}${additionalCharacters}\\w])+`)
+	const addKeysRegex = new RegExp(`(?<sep> *\\+ *)(?<key>${subsequentKeyRegex.source})`, 'gi')
+
+	const wholeRegex = new RegExp(`(?<initialKey>${initialKeyRegex.source}|${wrapperRegex.source})(${addKeysRegex.source})*`, 'gi')
+
+	return {
+		// characters,
+		// additionalCharacters,
+		// words,
+		openWrapper,
+		closeWrapper,
+		initialKeyRegex,
+		wrapperRegex,
+		addKeysRegex,
+		wholeRegex,
+	}
+}
+
 export default class NiceKBDsPlugin extends Plugin {
 	settings: NiceKBDsSettings;
 
@@ -249,7 +323,7 @@ export default class NiceKBDsPlugin extends Plugin {
 		// this.registerEditorExtension(getNiceKBDsViewPlugin(this.settings))
 		this.registerEditorExtension(getNiceKBDsStateField(this.settings))
 
-		this.registerMarkdownPostProcessor(getNiceKBDPostProcessor(this.settings));
+		this.registerMarkdownPostProcessor(getNiceKBDsPostProcessor(this.settings));
 	}
 
 	onunload() {
