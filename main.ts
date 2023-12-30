@@ -283,8 +283,8 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 				// And for SURE don't forget to finish adding the rest of the text.
 				newText += text.slice(lastIndex);
 				newInnerHTML += newText;
-			} else {
-				newInnerHTML += node.outerHTML;
+			} else if (node.nodeType === Node.ELEMENT_NODE) {
+				newInnerHTML += (node as HTMLElement).outerHTML;
 			}
 		}
 
