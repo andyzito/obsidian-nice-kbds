@@ -187,11 +187,11 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 			 *      e.g. `- ⌘ + \\` will fail because the escaped character `\\` will not be part of
 			 *      the base list-item, and therefore the key combo will first be matched as
 			 *      just `⌘ +`, excluding the escaped character.
+			 * EDIT: This also applies to ^quote, etc.
 			 */
-			if (node.name.match(/^quote|^list|formatting|HyperMD/)) return;
+			if (node.name.match(/^header|^quote|^list|formatting|HyperMD/)) return;
 
 			const nodeText = transaction.state.doc.sliceString(node.from, node.to);
-			console.log(node.name, nodeText)
 
 			let wholeMatch; // This is the whole combo, e.g. `⌘ + A + C`
 			while (wholeMatch = R.wholeRegex.exec(nodeText)) {
@@ -248,6 +248,7 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 	}
 })
 
+// The post-processor handles reading view and live edit callouts.
 const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLElement, context: any) => {
 	const replaceInnerHTMLForKBD = (el: HTMLElement) => {
 		const R = getNiceKBDsRegexes(settings, true); // true: Different mode for pre-processing.
@@ -292,7 +293,7 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 		el.innerHTML = newInnerHTML;
 	}
 
-	for (const el of element.findAll('p,li,div,h1,h2,h3,h4,h5,h6,h7')) { // I made this up.
+	for (const el of element.findAll('p,div,h1,h2,h3,h4,h5,h6,h7')) { // I made this up.
 		if (el.innerText) {
 			if (el.nodeName === 'DIV') { // Most DIVs are trash...
 				if (el.classList.contains('callout-title-inner')) { // ...but we do need this targeted fix for callout titles.
