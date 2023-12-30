@@ -9,14 +9,23 @@ import {
 	EditorView,
 	Decoration,
 	DecorationSet,
-	MatchDecorator,
-	ViewPlugin,
-	ViewUpdate,
 	WidgetType,
 } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 import { Range, StateField, Transaction, Extension } from '@codemirror/state';
-import { match } from 'assert';
+
+function indexOfGroup(match: RegExpMatchArray, n: number) {
+	var ix = match.index ?? 0;
+	for (var i = 1; i < n; i++)
+			ix += match[i].length;
+	return ix;
+}
+
+function regEscape(string: string) {
+	// https://stackoverflow.com/questions/3446170/escape-string-for-use-in-javascript-regex
+	// $& means the whole matched string
+	return string.replace(/[-.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 interface NiceKBDsSettings {
 	characters: string;
@@ -28,7 +37,7 @@ interface NiceKBDsSettings {
 const DEFAULT_SETTINGS: NiceKBDsSettings = {
 	//https://wincent.com/wiki/Unicode_representations_of_modifier_keys
 	characters: '⌘⇧⇪⇥⎋⌃⌥⎇␣⏎⌫⌦⇱⇲⇞⇟⌧⇭⌤⏏⌽',
-	additionalCharacters: '↑⇡↓⇣←⇠→⇢|\\~!@#$%^&*_+-=;:<>,./?',
+	additionalCharacters: '\\`↑⇡↓⇣←⇠→⇢|~!@#$%^&*_+-=;:<>,./?',
 	words: 'ctrl',
 	kbdWrapperForce: '«,»',
 }
@@ -92,64 +101,18 @@ class NiceKBDsSettingsTab extends PluginSettingTab {
 	}
 }
 
-class HideWidget extends WidgetType {
+class KBDWidget extends WidgetType {
+	constructor(public key: string) {
+		super();
+	}
+
 	toDOM() {
-		const element = document.createElement("span");
-		element.style.display = "none";
+		const element = document.createElement("kbd");
+		element.className = "nice-kbd";
+		element.innerText = this.key;
 		return element;
 	}
 }
-
-const getNiceKBDsViewPlugin = (settings: NiceKBDsSettings) => ViewPlugin.fromClass(class {
-	decorations: DecorationSet;
-	kbdDecorator: MatchDecorator;
-
-	constructor(view: EditorView) {
-		const characters = settings.characters;
-		const words = settings.words.split(',').join('|');
-		const initialKeyRegex = new RegExp(`([${characters}]+\\w*)|${words}`)
-		const subsequentKeyRegex = new RegExp(`(${initialKeyRegex.source}|\\w)+`)
-		const addKeysRegex = new RegExp(`(?<sep>\\s*\\+\\s*)(?<key>${subsequentKeyRegex.source})`, 'gi')
-		const wholeRegex = new RegExp(`(?<initialKey>${initialKeyRegex.source})(${addKeysRegex.source})*`, 'gi')
-
-		this.kbdDecorator = new MatchDecorator({
-			regexp: wholeRegex,
-			decorate(add, from, to, match, view) {
-				add(
-					from,
-					from + (match.groups?.initialKey?.length ?? 0),
-					Decoration.mark({
-						inclusive: true,
-						class: "nice-kbd",
-						tagName: "kbd",
-					})
-				)
-
-				let addKeysMatch;
-				while ((addKeysMatch = addKeysRegex.exec(match[0]))) {
-					add(
-						from + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
-						from + addKeysMatch.index + addKeysMatch[0].length,
-						Decoration.mark({
-							inclusive: true,
-							class: "nice-kbd",
-							tagName: "kbd",
-						})
-					)
-				}
-
-			}
-		})
-
-		this.decorations = this.kbdDecorator.createDeco(view);
-	}
-
-	update(update: ViewUpdate) {
-		this.decorations = this.kbdDecorator.updateDeco(update, this.decorations);
-	}
-}, {
-  decorations: instance => instance.decorations,
-})
 
 const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<DecorationSet>({
 	create() {
@@ -162,75 +125,101 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 		const isSourceMode = !transaction.state.field(editorLivePreviewField);
 		if (isSourceMode) return Decoration.none;
 
-		const includeIndices = new Set<string>();
+		const decorations: Range<Decoration>[] = [];
+		const indices: Record<number, Range<Decoration>[]> = {};
 		const excludeIndices = new Set<string>();
 
-		const decorations: Range<Decoration>[] = [];
 
-		syntaxTree(transaction.state).iterate({
-			enter(node){
-				if (node.name.match(/formatting|HyperMD/)) return;
+		syntaxTree(transaction.state).iterate({enter(node){
+			// Ignore formatting nodes.
+			if (node.name.match(/list|formatting|HyperMD/)) return;
 
-				let indices = includeIndices
-				if (node.name.match(/hashtag|code/)) {
-					indices = excludeIndices;
-				}
+			const nodeText = transaction.state.doc.sliceString(node.from, node.to);
 
-				const text = transaction.state.doc.sliceString(node.from, node.to);
-
-				let wholeMatch;
-				while ((wholeMatch = R.wholeRegex.exec(text))) {
-					// Check if wholeMatch is overlapping selection ranges
-					const docFrom = node.from + wholeMatch.index;
-					const docTo = node.from + wholeMatch.index + wholeMatch[0].length;
-					let mode = 'read'
-					const selectionRanges = transaction.state.selection.ranges;
-					for (const range of selectionRanges) {
-						if ((docFrom <= range.to && docTo >= range.from) || (docFrom >= range.from && docTo <= range.to)) {
-							mode = 'edit';
-							break;
-						}
+			const processKey = (
+				match: RegExpMatchArray,
+				groupName: string,
+				mode: string,
+				from: any,
+				to: any
+			) => {
+				const decorations: Range<Decoration>[] = [];
+				const groupText = match.groups?.[groupName]
+				const keyText = match.groups?.[groupName].replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+				// If we have special markdown formatting...
+				if (keyText?.match(new RegExp(`[${regEscape(R.formattingCharacters)}]`))) {
+					// And we're in read mode...
+					if (mode === 'read') {
+						// Use a replace widget to get around the markdown formatting.
+						decorations.push(
+							Decoration.replace({
+								widget: new KBDWidget(keyText.replace(/\\(.{1})/g, '$1')),
+							}).range(from, from + groupText?.length),
+						)
 					}
-
-					indices.add([
-						node.from + wholeMatch.index,
-						node.from + wholeMatch.index + (wholeMatch.groups?.initialKey?.length ?? 0)
-					].join(','));
-
-					if (wholeMatch.groups?.initialKey?.match(R.wrapperRegex) && mode === 'read') {
+				} else {
+					decorations.push(
+						Decoration.mark({
+							inclusive: true,
+							class: "nice-kbd",
+							tagName: "kbd",
+						}).range(from, from + groupText?.length),
+					)
+					let wrapperMatch = groupText?.match(R.wrappedKey)
+					if (wrapperMatch?.index !== undefined && mode === 'read') {
 						decorations.push(Decoration.replace({
-							widget: new HideWidget(),
-						}).range(node.from + wholeMatch.index, node.from + wholeMatch.index + 1))
+							inclusive: true,
+						}).range(from, from + indexOfGroup(wrapperMatch, 1) + wrapperMatch[1].length))
 						decorations.push(Decoration.replace({
-							widget: new HideWidget(),
-						}).range(node.from + wholeMatch.index + wholeMatch.groups?.initialKey?.length - 1, node.from + wholeMatch.index + wholeMatch.groups?.initialKey?.length))
-					}
-
-					let addKeysMatch;
-					while ((addKeysMatch = R.addKeysRegex.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey.length)))) {
-						indices.add([
-							node.from + wholeMatch.index + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
-							node.from + wholeMatch.index + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + addKeysMatch[0].length
-						].join(','));
+							inclusive: true,
+						}).range(from + indexOfGroup(wrapperMatch, 3), from + indexOfGroup(wrapperMatch, 3) + wrapperMatch[3].length))
 					}
 				}
-			}
-		})
 
-		indicesLoop: for (const index of includeIndices) {
-			const [start, end] = index.split(',').map(Number);
-			for (const excludeIndex of excludeIndices) {
-				const [xStart, xEnd] = excludeIndex.split(',').map(Number);
-				if (start == xStart) {
-					continue indicesLoop;
-				}
+				return decorations;
 			}
 
-			decorations.push(Decoration.mark({
-				inclusive: true,
-				class: "nice-kbd",
-				tagName: "kbd",
-			}).range(start, end))
+			let wholeMatch;
+			while (wholeMatch = R.wholeRegex.exec(nodeText)) {
+				const docFrom = node.from + wholeMatch.index;
+				const docTo = node.from + wholeMatch.index + wholeMatch[0].length;
+
+				// Exclude some nodes like code or tags.
+				if (node.name.match(/hashtag|code|escape/)) {
+					excludeIndices.add(docFrom.toString());
+					continue;
+				}
+
+				// Determine if we are editing this key combo.
+				let mode = 'read'
+				const selectionRanges = transaction.state.selection.ranges;
+				for (const range of selectionRanges) {
+					if ((docFrom <= range.to && docTo >= range.from) || (docFrom >= range.from && docTo <= range.to)) {
+						mode = 'edit';
+						break;
+					}
+				}
+
+				indices[docFrom] = [];
+
+				indices[docFrom].push(...processKey(wholeMatch, 'initialKey', mode, docFrom, docTo));
+
+				let addKeysMatch;
+				while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey.length))) {
+					indices[docFrom].push(...processKey(
+						addKeysMatch,
+						'key',
+						mode,
+						docFrom + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
+						docFrom + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + addKeysMatch[0].length
+					));
+				}
+			}
+		}})
+
+		for (const [index, _decorations] of Object.entries(indices)) {
+			if (excludeIndices.has(index)) continue;
+			decorations.push(..._decorations);
 		}
 
 		return Decoration.set(decorations, true);
@@ -243,15 +232,7 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 
 const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLElement, context: any) => {
 	const replaceInnerHTMLForKBD = (el: HTMLElement) => {
-		const R = getNiceKBDsRegexes(settings);
-
-		// const fuzzyGetMatchGroup = (match: RegExpExecArray, groupName: string) => {
-		// 	// Return the first group that matches /[a-z]${groupName}/i
-		// 	const fuzzyRegex = new RegExp(`[a-z]?${groupName}`, 'i');
-		// 	for (const [key, value] of Object.entries(match.groups ?? {})) {
-		// 		if (fuzzyRegex.test(key) && value !== undefined) return value;
-		// 	}
-		// }
+		const R = getNiceKBDsRegexes(settings, true);
 
 		const innerHTML = el.innerHTML;
 		let newInnerHTML = '';
@@ -259,15 +240,17 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 		let wholeMatch;
 		let lastIndex = 0;
 		while (wholeMatch = R.wholeRegex.exec(innerHTML)) {
+			if (wholeMatch[0].match(/<[a-zA-Z]+>/g)) continue;
 			newInnerHTML += innerHTML.slice(lastIndex, wholeMatch.index);
 
-			const rawInitialKey = wholeMatch.groups?.initialKey;
-			const initialKey = rawInitialKey?.replace(/^«|»$/g, '').trim();
+			const initialKey = wholeMatch.groups?.initialKey?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+
 			newInnerHTML += `<kbd class="nice-kbd">${initialKey}</kbd>`;
 
 			let addKeysMatch;
-			while (addKeysMatch = R.addKeysRegex.exec(wholeMatch[0].slice(rawInitialKey?.length))) {
-				newInnerHTML += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${addKeysMatch.groups?.key}</kbd>`;
+			while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey?.length))) {
+				const keyText = addKeysMatch.groups?.key?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+				newInnerHTML += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${keyText}</kbd>`;
 			}
 
 			lastIndex = wholeMatch.index + wholeMatch[0].length;
@@ -283,36 +266,57 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 					replaceInnerHTMLForKBD(el);
 				}
 			} else {
-				if (el.findAll('.tag,code').length > 0) continue;
+				// if (el.findAll('.tag,code').length > 0) continue;
+				if (el.findAll('.tag').length > 0) continue;
 				replaceInnerHTMLForKBD(el);
 			}
 		}
 	}
 }
 
-const getNiceKBDsRegexes = (settings: NiceKBDsSettings) => {
-	const characters = settings.characters;
-	const additionalCharacters = settings.additionalCharacters.replace(/[-.*+?^${}()|\[\]\\]/g, '\\$&'); // $& means the whole matched string // https://stackoverflow.com/questions/3446170/escape-string-for-use-in-javascript-regex
-	const words = settings.words.split(',').join('|');
+const getNiceKBDsRegexes = (settings: NiceKBDsSettings, postProcessing: boolean = false) => {
+	const formattingCharacters = '\\`[]<>*' // Need special handling b/c Markdown formatting
+	const triggerCharacters = settings.characters;
+	const triggerWords = settings.words.split(',').map(w => '\\b' + w + '\\b').join('|');
+	const triggers = `[${triggerCharacters}]|${triggerWords}`;
+
+	let additionalCharacters = regEscape(settings.additionalCharacters)
+	const escapedFormattingCharacters = []
+
+	if (!postProcessing) {
+		for (const char of settings.additionalCharacters) {
+			if (formattingCharacters.includes(char)) {
+				escapedFormattingCharacters.push(regEscape(`\\${char}`))
+			}
+		}
+		additionalCharacters = regEscape(settings.additionalCharacters
+			.replace(new RegExp(`[${regEscape(formattingCharacters)}]`, 'gi'), ''))
+	}
+
+	const formattingCharactersMatch =
+		escapedFormattingCharacters.length > 0
+		? '|' + escapedFormattingCharacters.join('|')
+		: '';
+	const allCharacters = `[${triggerCharacters}${additionalCharacters}\\w]${formattingCharactersMatch}`
+
 	const openWrapper = settings.kbdWrapperForce.split(',')[0];
 	const closeWrapper = settings.kbdWrapperForce.split(',')[1];
 
-	const initialKeyRegex = new RegExp(`([${characters}]+[${additionalCharacters}\\w]*)|${words}`)
-	const wrapperRegex = new RegExp(`${openWrapper}.*?${closeWrapper}`)
-	const subsequentKeyRegex = new RegExp(`([${characters}${additionalCharacters}\\w])+`)
-	const addKeysRegex = new RegExp(`(?<sep> *\\+ *)(?<key>${subsequentKeyRegex.source})`, 'gi')
+	const inWrapper = postProcessing ? `[^\\n]*?` : `([^\\n${regEscape(formattingCharacters)}]|${formattingCharactersMatch})*?`
+	const wrappedKey = `(${openWrapper}\\s*)(${inWrapper})(\\s*${closeWrapper})`
+	const initialKey = `((${triggers})(${allCharacters})*)|${wrappedKey}`
+	const additionalKey = `(${allCharacters})+|${wrappedKey}`
+	const addKeys = `(?<sep> *\\+ *)(?<key>${additionalKey})`
 
-	const wholeRegex = new RegExp(`(?<initialKey>${initialKeyRegex.source}|${wrapperRegex.source})(${addKeysRegex.source})*`, 'gi')
+	const wholeRegex = new RegExp(`(?<initialKey>${initialKey})(${addKeys})*`, 'gi')
 
 	return {
-		// characters,
-		// additionalCharacters,
-		// words,
+		formattingCharacters,
 		openWrapper,
 		closeWrapper,
-		initialKeyRegex,
-		wrapperRegex,
-		addKeysRegex,
+		initialKey: new RegExp(initialKey, 'gi'),
+		wrappedKey: new RegExp(wrappedKey, 'i'),
+		addKeys: new RegExp(addKeys, 'gi'),
 		wholeRegex,
 	}
 }
@@ -324,7 +328,6 @@ export default class NiceKBDsPlugin extends Plugin {
 		await this.loadSettings();
 		this.addSettingTab(new NiceKBDsSettingsTab(this.app, this));
 
-		// this.registerEditorExtension(getNiceKBDsViewPlugin(this.settings))
 		this.registerEditorExtension(getNiceKBDsStateField(this.settings))
 
 		this.registerMarkdownPostProcessor(getNiceKBDsPostProcessor(this.settings));
