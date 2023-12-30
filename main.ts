@@ -28,7 +28,7 @@ interface NiceKBDsSettings {
 const DEFAULT_SETTINGS: NiceKBDsSettings = {
 	//https://wincent.com/wiki/Unicode_representations_of_modifier_keys
 	characters: '⌘⇧⇪⇥⎋⌃⌥⎇␣⏎⌫⌦⇱⇲⇞⇟⌧⇭⌤⏏⌽',
-	additionalCharacters: '↑⇡↓⇣←⇠→⇢|\\{}[]~!@#$%^&*()_+`-=;:\'"<>,./?',
+	additionalCharacters: '↑⇡↓⇣←⇠→⇢|\\~!@#$%^&*_+-=;:<>,./?',
 	words: 'ctrl',
 	kbdWrapperForce: '«,»',
 }
@@ -217,9 +217,15 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 			}
 		})
 
-		for (const indices of includeIndices) {
-			if (excludeIndices.has(indices)) continue;
-			const [start, end] = indices.split(',').map(Number);
+		indicesLoop: for (const index of includeIndices) {
+			const [start, end] = index.split(',').map(Number);
+			for (const excludeIndex of excludeIndices) {
+				const [xStart, xEnd] = excludeIndex.split(',').map(Number);
+				if (start == xStart) {
+					continue indicesLoop;
+				}
+			}
+
 			decorations.push(Decoration.mark({
 				inclusive: true,
 				class: "nice-kbd",
