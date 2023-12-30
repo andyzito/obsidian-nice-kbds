@@ -28,17 +28,17 @@ function regEscape(string: string) {
 }
 
 interface NiceKBDsSettings {
-	characters: string;
-	additionalCharacters: string;
-	words: string;
-	kbdWrapperForce: string;
+	triggerCharacters: string; // Any one of these characters will trigger a key combo even if not wrapped in \b.
+	triggerWords: string; // These words will trigger a key combo, must be wrapped in \b. Case insensitive.
+	additionalCharacters: string; // These characters are allowed in keys after a key combo has been triggered.
+	kbdWrapperForce: string; // Characters to force a <kbd> tag. Separate open and close with a comma.
 }
 
 const DEFAULT_SETTINGS: NiceKBDsSettings = {
 	//https://wincent.com/wiki/Unicode_representations_of_modifier_keys
-	characters: '⌘⇧⇪⇥⎋⌃⌥⎇␣⏎⌫⌦⇱⇲⇞⇟⌧⇭⌤⏏⌽',
-	additionalCharacters: '\\`↑⇡↓⇣←⇠→⇢|~!@#$%^&*_+-=;:<>,./?',
-	words: 'ctrl',
+	triggerCharacters: '⌘⇧⇪⇥⎋⌃⌥⎇␣⏎⌫⌦⇱⇲⇞⇟⌧⇭⌤⏏⌽',
+	triggerWords: 'ctrl',
+	additionalCharacters: '\\`<>[]{}↑⇡↓⇣←⇠→⇢|~!@#$%^&*_+-=;:,./?',
 	kbdWrapperForce: '«,»',
 }
 
@@ -57,18 +57,18 @@ class NiceKBDsSettingsTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Characters')
-			.setDesc('Characters that will trigger a <kbd> tag.')
+			.setDesc('Any of these characters will trigger a <kbd> tag.')
 			.addText(text => text
-				.setPlaceholder(DEFAULT_SETTINGS.characters)
-				.setValue(this.plugin.settings.characters)
+				.setPlaceholder(DEFAULT_SETTINGS.triggerCharacters)
+				.setValue(this.plugin.settings.triggerCharacters)
 				.onChange(async (value) => {
-					this.plugin.settings.characters = value;
+					this.plugin.settings.triggerCharacters = value;
 					await this.plugin.saveSettings();
 				}));
 
 		new Setting(containerEl)
 			.setName('Additional Characters')
-			.setDesc('Characters that will work in an additional key but not trigger a key sequence.')
+			.setDesc('These characters are allowed in keys after a key combo has been triggered.')
 			.addText(text => text
 				.setPlaceholder(DEFAULT_SETTINGS.additionalCharacters)
 				.setValue(this.plugin.settings.additionalCharacters)
@@ -79,18 +79,18 @@ class NiceKBDsSettingsTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Words')
-			.setDesc('Words that will trigger a <kbd> tag. Case insensitive, comma separated.')
+			.setDesc('These words will trigger a key combo. Case insensitive. Separate with commas.')
 			.addText(text => text
-				.setPlaceholder(DEFAULT_SETTINGS.words)
-				.setValue(this.plugin.settings.words)
+				.setPlaceholder(DEFAULT_SETTINGS.triggerWords)
+				.setValue(this.plugin.settings.triggerWords)
 				.onChange(async (value) => {
-					this.plugin.settings.words = value;
+					this.plugin.settings.triggerWords = value;
 					await this.plugin.saveSettings();
 				}));
 
 		new Setting(containerEl)
 			.setName('Force KBD Wrapper')
-			.setDesc('Use like any other Markdown syntax to denote a KBD. Separate open and close with a comma.')
+			.setDesc('Characters to force a <kbd> tag. Separate open and close with a comma. We recommend the use of a plugin like Smart Typography.')
 			.addText(text => text
 				.setPlaceholder(DEFAULT_SETTINGS.kbdWrapperForce)
 				.setValue(this.plugin.settings.kbdWrapperForce)
@@ -114,6 +114,7 @@ class KBDWidget extends WidgetType {
 	}
 }
 
+// The StateField handles live editing (except for some special cases like callouts, which use post-processing).
 const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<DecorationSet>({
 	create() {
 		return Decoration.none;
@@ -121,7 +122,6 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 
 	update(prev: DecorationSet, transaction: Transaction): DecorationSet {
 		const R = getNiceKBDsRegexes(settings);
-
 
 		const processKey = (
 			match: RegExpMatchArray,
@@ -133,18 +133,19 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 			const decorations: Range<Decoration>[] = [];
 			const groupText = match.groups?.[groupName]
 			const keyText = match.groups?.[groupName].replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+
 			// If we have special markdown formatting...
 			if (keyText?.match(new RegExp(`[${regEscape(R.formattingCharacters)}]`))) {
-				// And we're in read mode...
-				if (mode === 'read') {
-					// Use a replace widget to get around the markdown formatting.
+				if (mode === 'read') { // And we're in read mode...
+					// Use a replace widget to avoid conflict with Obsidian's live formatting.
 					decorations.push(
 						Decoration.replace({
-							widget: new KBDWidget(keyText.replace(/\\(.{1})/g, '$1')),
+							widget: new KBDWidget(keyText.replace(/\\(.{1})/g, '$1')), // Unescape formatting characters, sort of. TODO: This is not perfect.
 						}).range(from, from + groupText?.length),
 					)
 				}
 			} else {
+				// Otherwise, just use a kbd tag.
 				decorations.push(
 					Decoration.mark({
 						inclusive: true,
@@ -152,6 +153,9 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 						tagName: "kbd",
 					}).range(from, from + groupText?.length),
 				)
+
+				// And hide the wrapper characters if we're in read mode.
+				// In the formatting char case, we don't need to do this because the widget is replacing the whole thing.
 				let wrapperMatch = groupText?.match(R.wrappedKey)
 				if (wrapperMatch?.index !== undefined && mode === 'read') {
 					decorations.push(Decoration.replace({
@@ -166,25 +170,35 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 			return decorations;
 		}
 
+		// No decorations if we're in source mode.
 		const isSourceMode = !transaction.state.field(editorLivePreviewField);
 		if (isSourceMode) return Decoration.none;
 
 		const decorations: Range<Decoration>[] = [];
-		const indices: Record<number, Range<Decoration>[]> = {};
-		const excludeIndices = new Set<string>();
+		const indices: Record<number, Range<Decoration>[]> = {}; // This will hold decorations mapped by combo.
+		const excludeIndices = new Set<string>(); // For excluding nodes like <code> or <tag>s.
 
 		syntaxTree(transaction.state).iterate({enter(node){
-			// Ignore formatting nodes.
+			// Ignore formatting and other troublesome nodes.
+			/* The `^list` is important; remember that list child nodes also have `list` in their name.
+			 *  - If you use just `list`, key combos in child ignore blocks (like <code>) will be matched,
+			 *      because the <code> block will never be processed and detected by excludeIndices.
+			 *  - If you remove `list` entirely, list-items will cause conflicts with child elements,
+			 *      e.g. `- ⌘ + \\` will fail because the escaped character `\\` will not be part of
+			 *      the base list-item, and therefore the key combo will first be matched as
+			 *      just `⌘ +`, excluding the escaped character.
+			 */
 			if (node.name.match(/^list|formatting|HyperMD/)) return;
 
 			const nodeText = transaction.state.doc.sliceString(node.from, node.to);
 
-			let wholeMatch;
+			let wholeMatch; // This is the whole combo, e.g. `⌘ + A + C`
 			while (wholeMatch = R.wholeRegex.exec(nodeText)) {
 				const docFrom = node.from + wholeMatch.index;
 				const docTo = node.from + wholeMatch.index + wholeMatch[0].length;
 
-				// Exclude some nodes like code or tags.
+				// Exclude some nodes like <code> or <tag>s. This is essential to override matches at the Document level.
+				// We cannot exclude Document entirely because basic text does not get its own node(s).
 				if (node.name.match(/hashtag|code|escape/)) {
 					excludeIndices.add(docFrom.toString());
 					continue;
@@ -202,14 +216,16 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 
 				indices[docFrom] = [];
 
+				// First we process the initial key, e.g. ⌘
 				indices[docFrom].push(...processKey(wholeMatch, 'initialKey', mode, docFrom, docTo));
 
-				let addKeysMatch;
+				let addKeysMatch; // Then we process any additional keys, e.g. ` + A`, ` + C`
 				while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey.length))) {
 					indices[docFrom].push(...processKey(
 						addKeysMatch,
 						'key',
 						mode,
+						// Base index + initial key length (already processed above) + this match index + separator length
 						docFrom + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
 						docFrom + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + addKeysMatch[0].length
 					));
@@ -217,6 +233,7 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 			}
 		}})
 
+		// Go back over our combos and add them to the decorations array unless they're excluded.
 		for (const [index, _decorations] of Object.entries(indices)) {
 			if (excludeIndices.has(index)) continue;
 			decorations.push(..._decorations);
@@ -226,48 +243,62 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 	},
 
 	provide(field: StateField<DecorationSet>): Extension {
-		return EditorView.decorations.from(field);
+		return EditorView.decorations.from(field); // This connects the decorations to the editor.
 	}
 })
 
 const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLElement, context: any) => {
 	const replaceInnerHTMLForKBD = (el: HTMLElement) => {
-		const R = getNiceKBDsRegexes(settings, true);
+		const R = getNiceKBDsRegexes(settings, true); // true: Different mode for pre-processing.
 
-		const innerHTML = el.innerHTML;
 		let newInnerHTML = '';
 
-		let wholeMatch;
-		let lastIndex = 0;
-		while (wholeMatch = R.wholeRegex.exec(innerHTML)) {
-			if (wholeMatch[0].match(/<[a-zA-Z]+>/g)) continue;
-			newInnerHTML += innerHTML.slice(lastIndex, wholeMatch.index);
+		/* We iterate through childNodes and match only on TEXT_NODEs.
+		 * This is because we want to avoid matching across child elements.
+		 * We rebuild innerHTML from replaced TEXT_NODEs and original HTML from other nodes.
+		 */
+		for (let node of Array.from(el.childNodes)) {
+			if (node.nodeType === Node.TEXT_NODE) {
+				const text = node.textContent ?? '';
+				let newText = '';
+				let wholeMatch;
+				let lastIndex = 0;
+				while (wholeMatch = R.wholeRegex.exec(text)) {
+					// From the last match to the start of this match, we add the original text.
+					newText += text.slice(lastIndex, wholeMatch.index);
 
-			const initialKey = wholeMatch.groups?.initialKey?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+					// Then we add the initial key, stripped and trimmed.
+					const initialKey = wholeMatch.groups?.initialKey?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+					newText += `<kbd class="nice-kbd">${initialKey}</kbd>`;
 
-			newInnerHTML += `<kbd class="nice-kbd">${initialKey}</kbd>`;
+					let addKeysMatch; // Then we add any additional keys, stripped and trimmed.
+					while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey?.length))) {
+						const keyText = addKeysMatch.groups?.key?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+						newText += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${keyText}</kbd>`;
+					}
 
-			let addKeysMatch;
-			while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey?.length))) {
-				const keyText = addKeysMatch.groups?.key?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
-				newInnerHTML += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${keyText}</kbd>`;
+					// Don't forget to update the lastIndex or everything will be fucky.
+					lastIndex = wholeMatch.index + wholeMatch[0].length;
+				}
+				// And for SURE don't forget to finish adding the rest of the text.
+				newText += text.slice(lastIndex);
+				newInnerHTML += newText;
+			} else {
+				newInnerHTML += node.outerHTML;
 			}
-
-			lastIndex = wholeMatch.index + wholeMatch[0].length;
 		}
-		newInnerHTML += innerHTML.slice(lastIndex);
+
 		el.innerHTML = newInnerHTML;
 	}
 
-	for (const el of element.findAll('p,li,div,h1,h2,h3,h4,h5,h6,h7')) {
+	for (const el of element.findAll('p,li,div,h1,h2,h3,h4,h5,h6,h7')) { // I made this up.
 		if (el.innerText) {
-			if (el.nodeName === 'DIV') {
-				if (el.classList.contains('callout-title-inner')) {
+			if (el.nodeName === 'DIV') { // Most DIVs are trash...
+				if (el.classList.contains('callout-title-inner')) { // ...but we do need this targeted fix for callout titles.
 					replaceInnerHTMLForKBD(el);
 				}
 			} else {
-				// if (el.findAll('.tag,code').length > 0) continue;
-				if (el.findAll('.tag').length > 0) continue;
+				if (el.findAll('.tag').length > 0) continue; // Targeted ignore for tags.
 				replaceInnerHTMLForKBD(el);
 			}
 		}
@@ -275,39 +306,60 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 }
 
 const getNiceKBDsRegexes = (settings: NiceKBDsSettings, postProcessing: boolean = false) => {
-	const formattingCharacters = '\\`[]<>*' // Need special handling b/c Markdown formatting
-	const triggerCharacters = settings.characters;
-	const triggerWords = settings.words.split(',').map(w => '\\b' + w + '\\b').join('|');
+	// Formmating characters need special handling to avoid conflict w/ Obsidian live Markdown formatting.
+	const formattingCharacters = '\\`[]<>*'
+
+	// Triggers are how we know to auto-match a key combo.
+	const triggerCharacters = settings.triggerCharacters;
+	const triggerWords = settings.triggerWords.split(',').map(w => '\\b' + w + '\\b').join('|'); // \b = word boundary // TODO: \b doesn't catch e.g. `Ctrl~` because ~ is not a word character.
 	const triggers = `[${triggerCharacters}]|${triggerWords}`;
 
-	let additionalCharacters = regEscape(settings.additionalCharacters)
-	const escapedFormattingCharacters = []
+	// Wrapper characters are how we know to force a <kbd> tag.
+	const openWrapper = settings.kbdWrapperForce.split(',')[0];
+	const closeWrapper = settings.kbdWrapperForce.split(',')[1];
 
+	// Additional characters are allowed in keys after a key combo has been triggered.
+	let additionalCharacters = regEscape(settings.additionalCharacters)
+
+	// In post-processing, there's no such thing as escaped characters;
+	// see the way we're splitting NODE_TEXTs out in the post-processor.
+	const escapedFormattingCharacters = []
 	if (!postProcessing) {
+		// If we're NOT post-processing, we sneakily replace the formatting characters with their escaped versions.
+		// This way we will not attempt to match an unescaped formatting character and conflict with Obsidian's live formatting.
 		for (const char of settings.additionalCharacters) {
 			if (formattingCharacters.includes(char)) {
 				escapedFormattingCharacters.push(regEscape(`\\${char}`))
 			}
 		}
-		additionalCharacters = regEscape(settings.additionalCharacters
-			.replace(new RegExp(`[${regEscape(formattingCharacters)}]`, 'gi'), ''))
+		// And then we remove the formatting characters from the additional characters so we don't match them twice.
+		additionalCharacters = regEscape(settings.additionalCharacters.replace(new RegExp(`[${regEscape(formattingCharacters)}]`, 'gi'), ''))
 	}
 
 	const formattingCharactersMatch =
 		escapedFormattingCharacters.length > 0
 		? '|' + escapedFormattingCharacters.join('|')
 		: '';
+
+	// For non-trigger characters, we allow any of the additional characters, word characters, or formatting characters.
 	const allCharacters = `[${triggerCharacters}${additionalCharacters}\\w]${formattingCharactersMatch}`
 
-	const openWrapper = settings.kbdWrapperForce.split(',')[0];
-	const closeWrapper = settings.kbdWrapperForce.split(',')[1];
-
-	const inWrapper = postProcessing ? `[^\\n]*?` : `([^\\n${regEscape(formattingCharacters)}]|${formattingCharactersMatch})*?`
+	// Wrapped keys can include almost any character.
+	const inWrapper = postProcessing
+		? `[^\\n]+?` // In post-processing, we don't need to worry about escaped characters.
+		: `([^\\n${regEscape(formattingCharacters)}]${formattingCharactersMatch})+?`
 	const wrappedKey = `(${openWrapper}\\s*)(${inWrapper})(\\s*${closeWrapper})`
+
+	// Initial keys must start with a trigger character or word, or be wrapped.
 	const initialKey = `((${triggers})(${allCharacters})*)|${wrappedKey}`
+
+	// Additional keys can be any of the allowed characters, or be wrapped.
 	const additionalKey = `(${allCharacters})+|${wrappedKey}`
+
+	// We allow multiple additional keys, separated by a plus sign.
 	const addKeys = `(?<sep> *\\+ *)(?<key>${additionalKey})`
 
+	// The whole regex is an initial key, followed by 0+ additional keys w/sep.
 	const wholeRegex = new RegExp(`(?<initialKey>${initialKey})(${addKeys})*`, 'gi')
 
 	return {
@@ -328,8 +380,10 @@ export default class NiceKBDsPlugin extends Plugin {
 		await this.loadSettings();
 		this.addSettingTab(new NiceKBDsSettingsTab(this.app, this));
 
+		// The editor extension handles live editing.
 		this.registerEditorExtension(getNiceKBDsStateField(this.settings))
 
+		// The post-processor handles reading view and live edit callouts.
 		this.registerMarkdownPostProcessor(getNiceKBDsPostProcessor(this.settings));
 	}
 
