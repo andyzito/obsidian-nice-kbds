@@ -277,7 +277,7 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 						newText += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${keyText}</kbd>`;
 					}
 
-					// Don't forget to update the lastIndex or everything will be fucky.
+					// Don't forget to update the lastIndex or everything will be bad.
 					lastIndex = wholeMatch.index + wholeMatch[0].length;
 				}
 				// And for SURE don't forget to finish adding the rest of the text.
