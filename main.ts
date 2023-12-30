@@ -355,7 +355,7 @@ const getNiceKBDsRegexes = (settings: NiceKBDsSettings, postProcessing: boolean 
 	const initialKey = `((${triggers})(${allCharacters})*)|${wrappedKey}`
 
 	// Additional keys can be any of the allowed characters, or be wrapped.
-	const additionalKey = `(${allCharacters})+|${wrappedKey}`
+	const additionalKey = `\\w+|(${allCharacters}){1}|${wrappedKey}`
 
 	// We allow multiple additional keys, separated by a plus sign.
 	const addKeys = `(?<sep> *\\+ *)(?<key>${additionalKey})`
