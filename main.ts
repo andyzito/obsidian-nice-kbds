@@ -188,9 +188,10 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 			 *      the base list-item, and therefore the key combo will first be matched as
 			 *      just `⌘ +`, excluding the escaped character.
 			 */
-			if (node.name.match(/^list|formatting|HyperMD/)) return;
+			if (node.name.match(/^quote|^list|formatting|HyperMD/)) return;
 
 			const nodeText = transaction.state.doc.sliceString(node.from, node.to);
+			console.log(node.name, nodeText)
 
 			let wholeMatch; // This is the whole combo, e.g. `⌘ + A + C`
 			while (wholeMatch = R.wholeRegex.exec(nodeText)) {
