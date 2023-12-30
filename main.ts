@@ -207,7 +207,6 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 					}
 
 					let addKeysMatch;
-					console.log(wholeMatch[0].slice(wholeMatch.groups?.initialKey.length))
 					while ((addKeysMatch = R.addKeysRegex.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey.length)))) {
 						indices.add([
 							node.from + wholeMatch.index + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
@@ -262,7 +261,6 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 
 			let addKeysMatch;
 			while (addKeysMatch = R.addKeysRegex.exec(wholeMatch[0].slice(rawInitialKey?.length))) {
-				console.log(addKeysMatch)
 				newInnerHTML += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${addKeysMatch.groups?.key}</kbd>`;
 			}
 
