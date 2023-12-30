@@ -286,7 +286,7 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 
 const getNiceKBDsRegexes = (settings: NiceKBDsSettings) => {
 	const characters = settings.characters;
-	const additionalCharacters = settings.additionalCharacters;
+	const additionalCharacters = settings.additionalCharacters.replace(/[-.*+?^${}()|\[\]\\]/g, '\\$&'); // $& means the whole matched string // https://stackoverflow.com/questions/3446170/escape-string-for-use-in-javascript-regex
 	const words = settings.words.split(',').join('|');
 	const openWrapper = settings.kbdWrapperForce.split(',')[0];
 	const closeWrapper = settings.kbdWrapperForce.split(',')[1];
