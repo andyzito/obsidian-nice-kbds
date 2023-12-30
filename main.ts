@@ -122,6 +122,50 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 	update(prev: DecorationSet, transaction: Transaction): DecorationSet {
 		const R = getNiceKBDsRegexes(settings);
 
+
+		const processKey = (
+			match: RegExpMatchArray,
+			groupName: string,
+			mode: string,
+			from: any,
+			to: any
+		) => {
+			const decorations: Range<Decoration>[] = [];
+			const groupText = match.groups?.[groupName]
+			const keyText = match.groups?.[groupName].replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+			// If we have special markdown formatting...
+			if (keyText?.match(new RegExp(`[${regEscape(R.formattingCharacters)}]`))) {
+				// And we're in read mode...
+				if (mode === 'read') {
+					// Use a replace widget to get around the markdown formatting.
+					decorations.push(
+						Decoration.replace({
+							widget: new KBDWidget(keyText.replace(/\\(.{1})/g, '$1')),
+						}).range(from, from + groupText?.length),
+					)
+				}
+			} else {
+				decorations.push(
+					Decoration.mark({
+						inclusive: true,
+						class: "nice-kbd",
+						tagName: "kbd",
+					}).range(from, from + groupText?.length),
+				)
+				let wrapperMatch = groupText?.match(R.wrappedKey)
+				if (wrapperMatch?.index !== undefined && mode === 'read') {
+					decorations.push(Decoration.replace({
+						inclusive: true,
+					}).range(from, from + indexOfGroup(wrapperMatch, 1) + wrapperMatch[1].length))
+					decorations.push(Decoration.replace({
+						inclusive: true,
+					}).range(from + indexOfGroup(wrapperMatch, 3), from + indexOfGroup(wrapperMatch, 3) + wrapperMatch[3].length))
+				}
+			}
+
+			return decorations;
+		}
+
 		const isSourceMode = !transaction.state.field(editorLivePreviewField);
 		if (isSourceMode) return Decoration.none;
 
@@ -129,55 +173,11 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 		const indices: Record<number, Range<Decoration>[]> = {};
 		const excludeIndices = new Set<string>();
 
-
 		syntaxTree(transaction.state).iterate({enter(node){
 			// Ignore formatting nodes.
-			if (node.name.match(/list|formatting|HyperMD/)) return;
+			if (node.name.match(/^list|formatting|HyperMD/)) return;
 
 			const nodeText = transaction.state.doc.sliceString(node.from, node.to);
-
-			const processKey = (
-				match: RegExpMatchArray,
-				groupName: string,
-				mode: string,
-				from: any,
-				to: any
-			) => {
-				const decorations: Range<Decoration>[] = [];
-				const groupText = match.groups?.[groupName]
-				const keyText = match.groups?.[groupName].replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
-				// If we have special markdown formatting...
-				if (keyText?.match(new RegExp(`[${regEscape(R.formattingCharacters)}]`))) {
-					// And we're in read mode...
-					if (mode === 'read') {
-						// Use a replace widget to get around the markdown formatting.
-						decorations.push(
-							Decoration.replace({
-								widget: new KBDWidget(keyText.replace(/\\(.{1})/g, '$1')),
-							}).range(from, from + groupText?.length),
-						)
-					}
-				} else {
-					decorations.push(
-						Decoration.mark({
-							inclusive: true,
-							class: "nice-kbd",
-							tagName: "kbd",
-						}).range(from, from + groupText?.length),
-					)
-					let wrapperMatch = groupText?.match(R.wrappedKey)
-					if (wrapperMatch?.index !== undefined && mode === 'read') {
-						decorations.push(Decoration.replace({
-							inclusive: true,
-						}).range(from, from + indexOfGroup(wrapperMatch, 1) + wrapperMatch[1].length))
-						decorations.push(Decoration.replace({
-							inclusive: true,
-						}).range(from + indexOfGroup(wrapperMatch, 3), from + indexOfGroup(wrapperMatch, 3) + wrapperMatch[3].length))
-					}
-				}
-
-				return decorations;
-			}
 
 			let wholeMatch;
 			while (wholeMatch = R.wholeRegex.exec(nodeText)) {
