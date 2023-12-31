@@ -28,7 +28,7 @@ This functionality should integrate seamlessly with the auto matching. Examples:
 ## Known Issues
 
 - Trigger words should be stricter about word boundary, e.g., `Ctrl~` should not trigger a key combo.
-- Some characters should probably be restricted to being on their own in a key, such as `[.,)]`, so that `(Ctrl+D)` wraps only the `Ctrl+D` part (currently it would wrap `Ctrl+D)`).
+- Backtick matching should be stricter, '⌘ + \\`' still comes out weird. Might just be a Markdown limitation though.
 
 # 🎩
 
