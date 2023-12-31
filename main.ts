@@ -251,45 +251,61 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 
 			const nodeText = transaction.state.doc.sliceString(node.from, node.to);
 
-			let wholeMatch; // This is the whole combo, e.g. `⌘ + A + C`
-			while (wholeMatch = R.wholeRegex.exec(nodeText)) {
-				const docFrom = node.from + wholeMatch.index;
-				const docTo = node.from + wholeMatch.index + wholeMatch[0].length;
+			walkThroughKeyCombos(
+				nodeText,
+				R,
+				settings,
+				(combo) => {
+					const docFrom = node.from + combo.from;
+					indices[docFrom] = [];
 
-				// Exclude some nodes like <code> or <tag>s. This is essential to override matches at the Document level.
-				// We cannot exclude Document entirely because basic text does not get its own node(s).
-				if (node.name.match(/comment|hashtag|code|escape|strikethrough/)) {
-					excludeIndices.add(docFrom.toString());
-					continue;
-				}
+					if (node.name.match(/comment|hashtag|code|escape|strikethrough/)) {
+						excludeIndices.add(docFrom.toString());
+						return;
+					}
+				},
+				(key) => {
+					const comboDocFrom = node.from + key.comboFrom;
+					const comboDocTo = node.from + key.comboTo;
+					const keyDocFrom = comboDocFrom + key.comboOffset;
 
-				// Determine if we are editing this key combo.
-				let mode = 'read'
-				const selectionRanges = transaction.state.selection.ranges;
-				for (const range of selectionRanges) {
-					if ((docFrom <= range.to && docTo >= range.from) || (docFrom >= range.from && docTo <= range.to)) {
-						mode = 'edit';
-						break;
+					let mode = 'read'
+					const selectionRanges = transaction.state.selection.ranges;
+					for (const range of selectionRanges) {
+						if ((comboDocFrom <= range.to && comboDocTo >= range.from) || (comboDocFrom >= range.from && comboDocTo <= range.to)) {
+							mode = 'edit';
+							break;
+						}
+					}
+
+					// If we have special markdown formatting...
+					if (key.trimmedText.match(new RegExp(`[${regEscape(R.formattingCharacters)}]`))) {
+						if (mode === 'read') { // And we're in read mode...
+							// Use a replace widget to avoid conflict with Obsidian's live formatting.
+							indices[comboDocFrom].push(
+								Decoration.replace({
+									widget: new KBDFactory(settings).getWidget(key.trimmedText.replace(/\\(.{1})/g, '$1')), // Unescape formatting characters, sort of. TODO: This is not perfect.
+								}).range(keyDocFrom, keyDocFrom + key.wholeText.length),
+							)
+						}
+					} else {
+						// Otherwise, just use a kbd tag.
+						indices[comboDocFrom].push(new KBDFactory(settings).getMark().range(keyDocFrom, keyDocFrom + key.wholeText.length));
+
+						// And hide the wrapper characters if we're in read mode.
+						// In the formatting char case, we don't need to do this because the widget is replacing the whole thing.
+						let wrapperMatch = key.wholeText.match(R.wrappedKey)
+						if (wrapperMatch?.index !== undefined && mode === 'read') {
+							indices[comboDocFrom].push(Decoration.replace({
+								inclusive: true,
+							}).range(keyDocFrom, keyDocFrom + indexOfGroup(wrapperMatch, 1) + wrapperMatch[1].length))
+							indices[comboDocFrom].push(Decoration.replace({
+								inclusive: true,
+							}).range(keyDocFrom + indexOfGroup(wrapperMatch, 3), keyDocFrom + indexOfGroup(wrapperMatch, 3) + wrapperMatch[3].length))
+						}
 					}
 				}
-
-				indices[docFrom] = [];
-
-				// First we process the initial key, e.g. ⌘
-				indices[docFrom].push(...processKey(wholeMatch, 'initialKey', mode, docFrom, docTo));
-
-				let addKeysMatch; // Then we process any additional keys, e.g. ` + A`, ` + C`
-				while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey.length))) {
-					indices[docFrom].push(...processKey(
-						addKeysMatch,
-						'key',
-						mode,
-						// Base index + initial key length (already processed above) + this match index + separator length
-						docFrom + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
-						docFrom + (wholeMatch.groups?.initialKey.length ?? 0) + addKeysMatch.index + addKeysMatch[0].length
-					));
-				}
-			}
+			)
 		}})
 
 		// Go back over our combos and add them to the decorations array unless they're excluded.
@@ -322,27 +338,20 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 				if (childNode.nodeType === Node.TEXT_NODE) {
 					const text = childNode.textContent ?? '';
 					let newText = '';
-					let wholeMatch;
-					let lastIndex = 0;
-					while (wholeMatch = R.wholeRegex.exec(text)) {
-						// From the last match to the start of this match, we add the original text.
-						newText += text.slice(lastIndex, wholeMatch.index);
-
-						// Then we add the initial key, stripped and trimmed.
-						const initialKey = wholeMatch.groups?.initialKey?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
-						newText += new KBDFactory(settings).getHTML(initialKey ?? ''); // `<kbd class="nice-kbd">${initialKey}</kbd>`;
-
-						let addKeysMatch; // Then we add any additional keys, stripped and trimmed.
-						while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey?.length))) {
-							const keyText = addKeysMatch.groups?.key?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
-							newText += `${addKeysMatch.groups?.sep}` //<kbd class="nice-kbd">${keyText}</kbd>`;
-							newText += new KBDFactory(settings).getHTML(keyText ?? '');
+					const lastIndex = walkThroughKeyCombos(
+						text,
+						R,
+						settings,
+						(combo) => {
+							newText += text.slice(combo.lastIndex, combo.from);
+						},
+						(key) => {
+							// const keyText = key.wholeText.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+							newText += key.sep;
+							newText += new KBDFactory(settings).getHTML(key.trimmedText);
 						}
+					);
 
-						// Don't forget to update the lastIndex or everything will be bad.
-						lastIndex = wholeMatch.index + wholeMatch[0].length;
-					}
-					// And for SURE don't forget to finish adding the rest of the text.
 					newText += text.slice(lastIndex);
 					newInnerHTML += newText;
 				} else if (childNode.nodeType === Node.ELEMENT_NODE) {
@@ -439,6 +448,56 @@ const getNiceKBDsRegexes = (settings: NiceKBDsSettings, postProcessing: boolean 
 		wholeRegex,
 	}
 }
+
+const walkThroughKeyCombos = (
+	string: string,
+	R: ReturnType<typeof getNiceKBDsRegexes>,
+	settings: NiceKBDsSettings,
+	processCombo: (...args: any[]) => void,
+	processKey: (...args: any[]) => void
+) => {
+	let wholeMatch;
+	let lastIndex = 0;
+	// I'm sure there's a way to make this cleaner. I'll get there.
+	// Probably using `yield` or something.
+	// Also interfaces.
+	while ((wholeMatch = R.wholeRegex.exec(string))) {
+		const comboFrom: number = wholeMatch.index;
+		const comboTo: number = wholeMatch.index + wholeMatch[0].length;
+
+		processCombo({
+			lastIndex,
+			from: comboFrom,
+			to: comboTo,
+		});
+
+		// First we add the initial key, stripped and trimmed.
+		processKey({
+			wholeText: wholeMatch.groups?.initialKey,
+			trimmedText: wholeMatch.groups?.initialKey.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim(),
+			sep: '',
+			comboFrom,
+			comboTo,
+			comboOffset: 0,
+		})
+
+		let addKeysMatch; // Then we add any additional keys, stripped and trimmed.
+		while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey?.length))) {
+			processKey({
+				wholeText: addKeysMatch.groups?.key,
+				trimmedText: addKeysMatch.groups?.key.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim(),
+				sep: addKeysMatch.groups?.sep,
+				comboFrom,
+				comboTo,
+				comboOffset: (wholeMatch.groups?.initialKey?.length ?? 0) + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
+			});
+		}
+
+		lastIndex = wholeMatch.index + wholeMatch[0].length;
+	}
+
+	return lastIndex;
+};
 
 export default class NiceKBDsPlugin extends Plugin {
 	settings: NiceKBDsSettings;
