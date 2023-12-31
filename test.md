@@ -76,7 +76,7 @@ Whitespace???
 
 *Shortcuts should work in italics ⌘ + A, yes*, and in bold **⌘ + A, yes**, but not if you try to overlap them like this **⌘** + A -- nope.
 
-Shorcuts should work in links like this [⌘ + A](https://obsidian.md), or like this [⌘ + A][1], or like this [My Link ⌘ + A is here][https://obsidian.md].
+Shorcuts should work in links like this [⌘ + A](https://obsidian.md), or like this [⌘ + A][1], or like this [My Link ⌘ + A is here](https://obsidian.md).
 
 [1]: https://obsidian.md
 

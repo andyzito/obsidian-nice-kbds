@@ -253,56 +253,55 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 	const replaceInnerHTMLForKBD = (el: HTMLElement) => {
 		const R = getNiceKBDsRegexes(settings, true); // true: Different mode for pre-processing.
 
-		let newInnerHTML = '';
+		// Recurse through child nodes and perform find-replace on TEXT_NODEs.
+		const processNode = (node: HTMLElement) => {
+			if (node.nodeName === 'CODE' || node.nodeName === 'PRE' || node.classList.contains('tag')) return node.outerHTML; // Ignore code blocks.
 
-		/* We iterate through childNodes and match only on TEXT_NODEs.
-		 * This is because we want to avoid matching across child elements.
-		 * We rebuild innerHTML from replaced TEXT_NODEs and original HTML from other nodes.
-		 */
-		for (let node of Array.from(el.childNodes)) {
-			if (node.nodeType === Node.TEXT_NODE) {
-				const text = node.textContent ?? '';
-				let newText = '';
-				let wholeMatch;
-				let lastIndex = 0;
-				while (wholeMatch = R.wholeRegex.exec(text)) {
-					// From the last match to the start of this match, we add the original text.
-					newText += text.slice(lastIndex, wholeMatch.index);
+			let newInnerHTML = '';
+			for (let childNode of Array.from(node.childNodes)) {
+				if (childNode.nodeType === Node.TEXT_NODE) {
+					const text = childNode.textContent ?? '';
+					let newText = '';
+					let wholeMatch;
+					let lastIndex = 0;
+					while (wholeMatch = R.wholeRegex.exec(text)) {
+						// From the last match to the start of this match, we add the original text.
+						newText += text.slice(lastIndex, wholeMatch.index);
 
-					// Then we add the initial key, stripped and trimmed.
-					const initialKey = wholeMatch.groups?.initialKey?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
-					newText += `<kbd class="nice-kbd">${initialKey}</kbd>`;
+						// Then we add the initial key, stripped and trimmed.
+						const initialKey = wholeMatch.groups?.initialKey?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+						newText += `<kbd class="nice-kbd">${initialKey}</kbd>`;
 
-					let addKeysMatch; // Then we add any additional keys, stripped and trimmed.
-					while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey?.length))) {
-						const keyText = addKeysMatch.groups?.key?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
-						newText += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${keyText}</kbd>`;
+						let addKeysMatch; // Then we add any additional keys, stripped and trimmed.
+						while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey?.length))) {
+							const keyText = addKeysMatch.groups?.key?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
+							newText += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${keyText}</kbd>`;
+						}
+
+						// Don't forget to update the lastIndex or everything will be bad.
+						lastIndex = wholeMatch.index + wholeMatch[0].length;
 					}
-
-					// Don't forget to update the lastIndex or everything will be bad.
-					lastIndex = wholeMatch.index + wholeMatch[0].length;
+					// And for SURE don't forget to finish adding the rest of the text.
+					newText += text.slice(lastIndex);
+					newInnerHTML += newText;
+				} else if (childNode.nodeType === Node.ELEMENT_NODE) {
+					newInnerHTML += processNode(childNode as HTMLElement);
 				}
-				// And for SURE don't forget to finish adding the rest of the text.
-				newText += text.slice(lastIndex);
-				newInnerHTML += newText;
-			} else if (node.nodeType === Node.ELEMENT_NODE) {
-				newInnerHTML += (node as HTMLElement).outerHTML;
 			}
+
+			node.innerHTML = newInnerHTML; // This might be bad.
+			return node.outerHTML;
 		}
 
-		el.innerHTML = newInnerHTML;
+		/* We iterate through childNodes and build newInnerHTML with find-replace done on TEXT_NODEs.
+		 * This is because we want to avoid matching across sibling elements.
+		 */
+		el.innerHTML = processNode(el);
 	}
 
-	for (const el of element.findAll('p,div,h1,h2,h3,h4,h5,h6,h7')) { // I made this up.
+	for (const el of element.findAll('p,div.callout-title-inner,h1,h2,h3,h4,h5,h6')) { // <p> will cover most things w/processNode.
 		if (el.innerText) {
-			if (el.nodeName === 'DIV') { // Most DIVs are trash...
-				if (el.classList.contains('callout-title-inner')) { // ...but we do need this targeted fix for callout titles.
-					replaceInnerHTMLForKBD(el);
-				}
-			} else {
-				if (el.findAll('.tag').length > 0) continue; // Targeted ignore for tags.
-				replaceInnerHTMLForKBD(el);
-			}
+			replaceInnerHTMLForKBD(el);
 		}
 	}
 }
