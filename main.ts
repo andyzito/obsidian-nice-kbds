@@ -16,7 +16,7 @@ import { Range, StateField, Transaction, Extension } from '@codemirror/state';
 
 function indexOfGroup(match: RegExpMatchArray, n: number) {
 	var ix = match.index ?? 0;
-	for (var i = 1; i < n; i++)
+	for (var i = 1; i < (n-1); i++)
 			ix += match[i].length;
 	return ix;
 }
@@ -187,47 +187,6 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 	update(prev: DecorationSet, transaction: Transaction): DecorationSet {
 		const R = getNiceKBDsRegexes(settings);
 
-		const processKey = (
-			match: RegExpMatchArray,
-			groupName: string,
-			mode: string,
-			from: any,
-			to: any
-		) => {
-			const decorations: Range<Decoration>[] = [];
-			const groupText = match.groups?.[groupName]
-			const keyText = match.groups?.[groupName].replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
-
-			// If we have special markdown formatting...
-			if (keyText?.match(new RegExp(`[${regEscape(R.formattingCharacters)}]`))) {
-				if (mode === 'read') { // And we're in read mode...
-					// Use a replace widget to avoid conflict with Obsidian's live formatting.
-					decorations.push(
-						Decoration.replace({
-							widget: new KBDFactory(settings).getWidget(keyText.replace(/\\(.{1})/g, '$1')), // Unescape formatting characters, sort of. TODO: This is not perfect.
-						}).range(from, from + groupText?.length),
-					)
-				}
-			} else {
-				// Otherwise, just use a kbd tag.
-				decorations.push(new KBDFactory(settings).getMark().range(from, from + groupText?.length));
-
-				// And hide the wrapper characters if we're in read mode.
-				// In the formatting char case, we don't need to do this because the widget is replacing the whole thing.
-				let wrapperMatch = groupText?.match(R.wrappedKey)
-				if (wrapperMatch?.index !== undefined && mode === 'read') {
-					decorations.push(Decoration.replace({
-						inclusive: true,
-					}).range(from, from + indexOfGroup(wrapperMatch, 1) + wrapperMatch[1].length))
-					decorations.push(Decoration.replace({
-						inclusive: true,
-					}).range(from + indexOfGroup(wrapperMatch, 3), from + indexOfGroup(wrapperMatch, 3) + wrapperMatch[3].length))
-				}
-			}
-
-			return decorations;
-		}
-
 		// No decorations if we're in source mode.
 		const isSourceMode = !transaction.state.field(editorLivePreviewField);
 		if (isSourceMode) return Decoration.none;
@@ -251,10 +210,7 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 
 			const nodeText = transaction.state.doc.sliceString(node.from, node.to);
 
-			walkThroughKeyCombos(
-				nodeText,
-				R,
-				settings,
+			walkThroughKeyCombos(nodeText, R, settings,
 				(combo) => {
 					const docFrom = node.from + combo.from;
 					indices[docFrom] = [];
@@ -294,14 +250,14 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 
 						// And hide the wrapper characters if we're in read mode.
 						// In the formatting char case, we don't need to do this because the widget is replacing the whole thing.
-						let wrapperMatch = key.wholeText.match(R.wrappedKey)
-						if (wrapperMatch?.index !== undefined && mode === 'read') {
+						// let wrapperMatch = key.wholeText.match(R.wrappedKey)
+						if (mode === 'read' && key.openWrapperOffsets && key.closeWrapperOffsets) {
 							indices[comboDocFrom].push(Decoration.replace({
 								inclusive: true,
-							}).range(keyDocFrom, keyDocFrom + indexOfGroup(wrapperMatch, 1) + wrapperMatch[1].length))
+							}).range(comboDocFrom + key.openWrapperOffsets[0], comboDocFrom + key.openWrapperOffsets[1]))
 							indices[comboDocFrom].push(Decoration.replace({
 								inclusive: true,
-							}).range(keyDocFrom + indexOfGroup(wrapperMatch, 3), keyDocFrom + indexOfGroup(wrapperMatch, 3) + wrapperMatch[3].length))
+							}).range(comboDocFrom + key.closeWrapperOffsets[0], comboDocFrom + key.closeWrapperOffsets[1]))
 						}
 					}
 				}
@@ -338,10 +294,7 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 				if (childNode.nodeType === Node.TEXT_NODE) {
 					const text = childNode.textContent ?? '';
 					let newText = '';
-					const lastIndex = walkThroughKeyCombos(
-						text,
-						R,
-						settings,
+					const lastIndex = walkThroughKeyCombos(text, R, settings,
 						(combo) => {
 							newText += text.slice(combo.lastIndex, combo.from);
 						},
@@ -422,21 +375,39 @@ const getNiceKBDsRegexes = (settings: NiceKBDsSettings, postProcessing: boolean 
 
 	// Wrapped keys can include almost any character.
 	const inWrapper = postProcessing
-		? `[^\\n]+?` // In post-processing, we don't need to worry about escaped characters.
+		? `([^\\n])+?` // In post-processing, we don't need to worry about escaped characters.
 		: `([^\\n${regEscape(formattingCharacters)}]${formattingCharactersMatch})+?`
-	const wrappedKey = `(${openWrapper}\\s*)(${inWrapper})(\\s*${closeWrapper})`
+	const wrappedKey = `(${openWrapper}[^\\S\\r\\n]*)(${inWrapper})([^\\S\\r\\n]*${closeWrapper})`
 
 	// Initial keys must start with a trigger character or word, or be wrapped.
-	const initialKey = `((${triggers})(${allCharacters})*)|${wrappedKey}`
+	let initialKeyParts = [];
+	if (settings.useAutoFormat) {
+		initialKeyParts.push(`((${triggers})(${allCharacters})*)`)
+	}
+	if (settings.useManualFormat) {
+		initialKeyParts.push(wrappedKey)
+	}
+	const initialKey = initialKeyParts.join('|')
 
 	// Additional keys can be any of the allowed characters, or be wrapped.
-	const additionalKey = `\\w+|(${allCharacters}){1}|${wrappedKey}`
+	const additionalKeyParts = [];
+	if (settings.useAutoFormat) {
+		additionalKeyParts.push('\\w+')
+		additionalKeyParts.push(`(${allCharacters}){1}`)
+	}
+	if (settings.useManualFormat) {
+		additionalKeyParts.push(wrappedKey)
+	}
+	const additionalKey = additionalKeyParts.join('|')
 
 	// We allow multiple additional keys, separated by a plus sign.
 	const addKeys = `(?<sep> *\\+ *)(?<key>${additionalKey})`
 
 	// The whole regex is an initial key, followed by 0+ additional keys w/sep.
-	const wholeRegex = new RegExp(`(?<initialKey>${initialKey})(${addKeys})*`, 'gi')
+	const wholeRegex = settings.useAutoFormat
+		? new RegExp(`(?<initialKey>${initialKey})(${addKeys})*`, 'gi')
+		: new RegExp(`(?<initialKey>${initialKey})`, 'gi')
+
 
 	return {
 		formattingCharacters,
@@ -465,6 +436,8 @@ const walkThroughKeyCombos = (
 		const comboFrom: number = wholeMatch.index;
 		const comboTo: number = wholeMatch.index + wholeMatch[0].length;
 
+		const trimRegex = settings.useManualFormat ? `^${R.openWrapper}|${R.closeWrapper}$` : ''
+
 		processCombo({
 			lastIndex,
 			from: comboFrom,
@@ -472,25 +445,45 @@ const walkThroughKeyCombos = (
 		});
 
 		// First we add the initial key, stripped and trimmed.
+		let wrapperMatch = wholeMatch[0].match(R.wrappedKey)
+		let openWrapperOffsets;
+		let closeWrapperOffsets;
+		if (wrapperMatch?.index !== undefined && settings.useManualFormat) {
+			openWrapperOffsets = [indexOfGroup(wrapperMatch, 1), indexOfGroup(wrapperMatch, 1) + wrapperMatch[1].length]
+			closeWrapperOffsets = [indexOfGroup(wrapperMatch, 4), indexOfGroup(wrapperMatch, 4) + wrapperMatch[4].length]
+		}
 		processKey({
 			wholeText: wholeMatch.groups?.initialKey,
-			trimmedText: wholeMatch.groups?.initialKey.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim(),
+			trimmedText: wholeMatch.groups?.initialKey.replace(new RegExp(trimRegex, 'gi'), '').trim(),
 			sep: '',
 			comboFrom,
 			comboTo,
 			comboOffset: 0,
+			openWrapperOffsets,
+			closeWrapperOffsets,
 		})
 
-		let addKeysMatch; // Then we add any additional keys, stripped and trimmed.
-		while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey?.length))) {
-			processKey({
-				wholeText: addKeysMatch.groups?.key,
-				trimmedText: addKeysMatch.groups?.key.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim(),
-				sep: addKeysMatch.groups?.sep,
-				comboFrom,
-				comboTo,
-				comboOffset: (wholeMatch.groups?.initialKey?.length ?? 0) + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
-			});
+		if (settings.useAutoFormat) {
+			let addKeysMatch; // Then we add any additional keys, stripped and trimmed.
+			while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey?.length))) {
+				let wrapperMatch = addKeysMatch[0].match(R.wrappedKey)
+				let openWrapperOffsets = null;
+				let closeWrapperOffsets = null;
+				if (wrapperMatch?.index !== undefined && settings.useManualFormat) {
+					openWrapperOffsets = [(wholeMatch.groups?.initialKey?.length ?? 0) + indexOfGroup(wrapperMatch, 1), (wholeMatch.groups?.initialKey?.length ?? 0) + indexOfGroup(wrapperMatch, 1) + wrapperMatch[1].length]
+					closeWrapperOffsets = [(wholeMatch.groups?.initialKey?.length ?? 0) + indexOfGroup(wrapperMatch, 4), (wholeMatch.groups?.initialKey?.length ?? 0) + indexOfGroup(wrapperMatch, 4) + wrapperMatch[4].length]
+				}
+				processKey({
+					wholeText: addKeysMatch.groups?.key,
+					trimmedText: addKeysMatch.groups?.key.replace(new RegExp(trimRegex, 'gi'), '').trim(),
+					sep: addKeysMatch.groups?.sep,
+					comboFrom,
+					comboTo,
+					comboOffset: (wholeMatch.groups?.initialKey?.length ?? 0) + addKeysMatch.index + (addKeysMatch.groups?.sep?.length ?? 0),
+					openWrapperOffsets,
+					closeWrapperOffsets,
+				});
+			}
 		}
 
 		lastIndex = wholeMatch.index + wholeMatch[0].length;
