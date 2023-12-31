@@ -189,7 +189,7 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 			 *      just `⌘ +`, excluding the escaped character.
 			 * EDIT: This also applies to ^quote, etc.
 			 */
-			if (node.name.match(/^header|^quote|^list|formatting|HyperMD/)) return;
+			if (node.name.match(/^hmd-table-sep|^header|^quote|^list|formatting/)) return;
 
 			const nodeText = transaction.state.doc.sliceString(node.from, node.to);
 
@@ -200,7 +200,7 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 
 				// Exclude some nodes like <code> or <tag>s. This is essential to override matches at the Document level.
 				// We cannot exclude Document entirely because basic text does not get its own node(s).
-				if (node.name.match(/hashtag|code|escape/)) {
+				if (node.name.match(/comment|hashtag|code|escape|strikethrough/)) {
 					excludeIndices.add(docFrom.toString());
 					continue;
 				}
@@ -255,7 +255,9 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 
 		// Recurse through child nodes and perform find-replace on TEXT_NODEs.
 		const processNode = (node: HTMLElement) => {
-			if (node.nodeName === 'CODE' || node.nodeName === 'PRE' || node.classList.contains('tag')) return node.outerHTML; // Ignore code blocks.
+			// Ignore code, strikethrough, tags, comments (not technically needed since they are hidden in read mode, but better to be explicit)
+			const ignoreElements = ['CODE', 'PRE', 'DEL'];
+			if (ignoreElements.includes(node.nodeName) || node.classList.contains('tag') || node.classList.contains('cm-comment')) return node.outerHTML;
 
 			let newInnerHTML = '';
 			for (let childNode of Array.from(node.childNodes)) {
@@ -299,9 +301,14 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 		el.innerHTML = processNode(el);
 	}
 
-	for (const el of element.findAll('p,div.callout-title-inner,h1,h2,h3,h4,h5,h6')) { // <p> will cover most things w/processNode.
-		if (el.innerText) {
-			replaceInnerHTMLForKBD(el);
+	const selector = 'p,div.callout-title-inner,td,div.table-cell-wrapper,li,h1,h2,h3,h4,h5,h6'
+	if (element.matches(selector)) {
+		replaceInnerHTMLForKBD(element);
+	} else {
+		for (const el of element.findAll(selector)) {
+			if (el.innerText) {
+				replaceInnerHTMLForKBD(el);
+			}
 		}
 	}
 }
