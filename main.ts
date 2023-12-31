@@ -3,7 +3,8 @@ import {
 	Plugin,
 	PluginSettingTab,
 	Setting,
-	editorLivePreviewField
+	editorLivePreviewField,
+	Notice,
 } from 'obsidian';
 import {
 	EditorView,
@@ -444,6 +445,8 @@ const walkThroughKeyCombos = (
 			to: comboTo,
 		});
 
+		// Todo: DRY out initial vs additional key code.
+
 		// First we add the initial key, stripped and trimmed.
 		let wrapperMatch = wholeMatch[0].match(R.wrappedKey)
 		let openWrapperOffsets;
@@ -498,6 +501,11 @@ export default class NiceKBDsPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 		this.addSettingTab(new NiceKBDsSettingsTab(this.app, this));
+
+		if (!this.settings.useAutoFormat && !this.settings.useManualFormat) {
+			new Notice('Nice KBDs: You must enable at least one of Auto Format or Manual Format.');
+			return;
+		}
 
 		// The editor extension handles live editing.
 		this.registerEditorExtension(getNiceKBDsStateField(this.settings))
