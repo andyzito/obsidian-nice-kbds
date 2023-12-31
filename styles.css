@@ -1,17 +1,17 @@
-.nice-kbd {
+kbd.nice-kbd {
     border: 1px solid;
     border-radius: 5px;
     padding: 0.15em 0.4em;
     font-family: var(--font-text);
 }
 
-body.theme-dark .nice-kbd {
+body.theme-dark kbd.nice-kbd {
     border-color: rgb(170, 170, 170);
     background-color: rgba(210, 210, 210, 1);
     color: black;
 }
 
-body.theme-light .nice-kbd {
+body.theme-light kbd.nice-kbd {
     border-color: rgb(170, 170, 170);
     background-color: rgba(230, 230, 230, 1);
 }

@@ -28,6 +28,9 @@ function regEscape(string: string) {
 }
 
 interface NiceKBDsSettings {
+	useAutoFormat: boolean;
+	useManualFormat: boolean;
+	useStyles: boolean;
 	triggerCharacters: string; // Any one of these characters will trigger a key combo even if not wrapped in \b.
 	triggerWords: string; // These words will trigger a key combo, must be wrapped in \b. Case insensitive.
 	additionalCharacters: string; // These characters are allowed in keys after a key combo has been triggered.
@@ -36,6 +39,9 @@ interface NiceKBDsSettings {
 
 const DEFAULT_SETTINGS: NiceKBDsSettings = {
 	//https://wincent.com/wiki/Unicode_representations_of_modifier_keys
+	useAutoFormat: true,
+	useManualFormat: true,
+	useStyles: true,
 	triggerCharacters: '⌘⇧⇪⇥⎋⌃⌥⎇␣⏎⌫⌦⇱⇲⇞⇟⌧⇭⌤⏏⌽',
 	triggerWords: 'ctrl',
 	additionalCharacters: '\\`<>[]{}↑⇡↓⇣←⇠→⇢|~!@#$%^&*_+-=;:,./?',
@@ -54,6 +60,36 @@ class NiceKBDsSettingsTab extends PluginSettingTab {
 		const {containerEl} = this;
 
 		containerEl.empty();
+
+		new Setting(containerEl)
+			.setName('Auto Format')
+			.setDesc('Automatically format key combos in read mode.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.useAutoFormat)
+				.onChange(async (value) => {
+					this.plugin.settings.useAutoFormat = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Manual Format')
+			.setDesc('Manually format key combos in edit mode.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.useManualFormat)
+				.onChange(async (value) => {
+					this.plugin.settings.useManualFormat = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Styles')
+			.setDesc('Use the default styles for <kbd> tags.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.useStyles)
+				.onChange(async (value) => {
+					this.plugin.settings.useStyles = value;
+					await this.plugin.saveSettings();
+				}));
 
 		new Setting(containerEl)
 			.setName('Characters')
@@ -102,15 +138,43 @@ class NiceKBDsSettingsTab extends PluginSettingTab {
 }
 
 class KBDWidget extends WidgetType {
-	constructor(public key: string) {
+	constructor(private key: string, private settings: NiceKBDsSettings) {
 		super();
 	}
 
 	toDOM() {
-		const element = document.createElement("kbd");
-		element.className = "nice-kbd";
-		element.innerText = this.key;
+		return new KBDFactory(this.settings).getElement(this.key);
+	}
+}
+
+class KBDFactory {
+	constructor(private settings: NiceKBDsSettings) {}
+
+	getClassName() {
+		return this.settings.useStyles ? 'nice-kbd' : '';
+	}
+
+	getMark() {
+		return Decoration.mark({
+			inclusive: true,
+			class: this.getClassName(),
+			tagName: 'kbd',
+		})
+	}
+
+	getWidget(key: string) {
+		return new KBDWidget(key, this.settings);
+	}
+
+	getElement(key: string) {
+		const element = document.createElement('kbd');
+		element.className = this.getClassName();
+		element.innerText = key;
 		return element;
+	}
+
+	getHTML(key: string) {
+		return this.getElement(key).outerHTML;
 	}
 }
 
@@ -140,19 +204,13 @@ const getNiceKBDsStateField = (settings: NiceKBDsSettings) => StateField.define<
 					// Use a replace widget to avoid conflict with Obsidian's live formatting.
 					decorations.push(
 						Decoration.replace({
-							widget: new KBDWidget(keyText.replace(/\\(.{1})/g, '$1')), // Unescape formatting characters, sort of. TODO: This is not perfect.
+							widget: new KBDFactory(settings).getWidget(keyText.replace(/\\(.{1})/g, '$1')), // Unescape formatting characters, sort of. TODO: This is not perfect.
 						}).range(from, from + groupText?.length),
 					)
 				}
 			} else {
 				// Otherwise, just use a kbd tag.
-				decorations.push(
-					Decoration.mark({
-						inclusive: true,
-						class: "nice-kbd",
-						tagName: "kbd",
-					}).range(from, from + groupText?.length),
-				)
+				decorations.push(new KBDFactory(settings).getMark().range(from, from + groupText?.length));
 
 				// And hide the wrapper characters if we're in read mode.
 				// In the formatting char case, we don't need to do this because the widget is replacing the whole thing.
@@ -272,12 +330,13 @@ const getNiceKBDsPostProcessor = (settings: NiceKBDsSettings) => (element: HTMLE
 
 						// Then we add the initial key, stripped and trimmed.
 						const initialKey = wholeMatch.groups?.initialKey?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
-						newText += `<kbd class="nice-kbd">${initialKey}</kbd>`;
+						newText += new KBDFactory(settings).getHTML(initialKey ?? ''); // `<kbd class="nice-kbd">${initialKey}</kbd>`;
 
 						let addKeysMatch; // Then we add any additional keys, stripped and trimmed.
 						while (addKeysMatch = R.addKeys.exec(wholeMatch[0].slice(wholeMatch.groups?.initialKey?.length))) {
 							const keyText = addKeysMatch.groups?.key?.replace(new RegExp(`^${R.openWrapper}|${R.closeWrapper}$`, 'gi'), '').trim();
-							newText += `${addKeysMatch.groups?.sep}<kbd class="nice-kbd">${keyText}</kbd>`;
+							newText += `${addKeysMatch.groups?.sep}` //<kbd class="nice-kbd">${keyText}</kbd>`;
+							newText += new KBDFactory(settings).getHTML(keyText ?? '');
 						}
 
 						// Don't forget to update the lastIndex or everything will be bad.
