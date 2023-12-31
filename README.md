@@ -2,6 +2,8 @@
 
 `<kbd>` is the HTML tag for keyboard input. It's useful for showing keyboard shortcuts in documentation. This plugin automatically adds the `<kbd>` tag to any text that matches the pattern of a keyboard shortcut/combo. It also provides a new Markdown syntax (wrapper characters configurable) for indicating key combos: `«CMD»`. Prettier styles are also included.
 
+![Examples of key combos](demo.png)
+
 ## Auto Matching
 
 This plugin assumes that:
