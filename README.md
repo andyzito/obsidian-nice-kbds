@@ -1,6 +1,8 @@
 # Nice KBDs
 
-`<kbd>` is the HTML tag for keyboard input. It's useful for showing keyboard shortcuts in documentation. This plugin automatically adds the `<kbd>` tag to any text that matches the pattern of a keyboard shortcut/combo. It also provides a new Markdown syntax (wrapper characters configurable) for indicating key combos: `«CMD»`. Prettier styles are also included.
+This Obsidian plugin automatically detects keyboard shortcuts and wraps them in <kbd> tags. For example, ⌘ + A becomes <kbd>⌘</kbd> + <kbd>A</kbd>, making keyboard combinations clear and visually distinct (styles included).
+
+Additionally, this plugin introduces a unique Markdown syntax for manually specifying keyboard inputs. Using configurable wrapper characters, you can indicate key combos, like `«CMD»` <kbd>CMD</kbd>.
 
 ![Examples of key combos](demo.png)
 
@@ -20,7 +22,7 @@ Examples:
 
 You may force a `<kbd>` by using the `«»` syntax. These wrapper characters are configurable.
 
-This functionality should integrate seamlessly with the auto matching. Examples:
+This functionality works interoperably with the auto matching. Examples:
 - «⌘⇧A»
 - «Ctrl» + «Shift» «+A»
 - «CMD» + OPT + F12
