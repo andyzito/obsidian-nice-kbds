@@ -11,6 +11,7 @@ body.theme-dark .app-container.nice-kbds--styles-plugin kbd.nice-kbd {
     border-color: rgb(170, 170, 170);
     background-color: rgba(210, 210, 210, 1);
     color: black;
+    caret-color: black;
 }
 
 body.theme-light .app-container.nice-kbds--styles-all kbd,

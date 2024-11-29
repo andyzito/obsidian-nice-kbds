@@ -529,7 +529,7 @@ export default class NiceKBDsPlugin extends Plugin {
 
 		const usePluginStyles = this.settings.usePluginStyles.toLowerCase()
 		if (usePluginStyles === 'all' || usePluginStyles === 'plugin') {
-			this.app.dom.appContainerEl.classList.add('nice-kbds--styles-' + usePluginStyles)
+			(this.app as any).dom.appContainerEl.classList.add('nice-kbds--styles-' + usePluginStyles)
 		}
 
 		// The editor extension handles live editing.
